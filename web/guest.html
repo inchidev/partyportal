@@ -58,7 +58,7 @@
     noaccess: ['Control is off for now', 'The host has not yet allowed PartyPortal to control the mouse and keyboard.'],
   }
 
-  let ws, decoder, waitKey = true, gotFrame = false, final = false, retry = 0, bestGap = Infinity, late = 0, skipped = 0
+  let ws, decoder, waitKey = true, gotFrame = false, final = false, retry = 0, bestGap = Infinity, late = 0, skipped = 0, badLog = [], udpGaveUp = false
   let state = { sharing: false, control: false, viewOnly: false, paused: null, title: '' }
   let frames = 0, bytes = 0, rtt = null, pingN = 0, pingAt = 0, toastTimer
 
@@ -213,26 +213,28 @@
   window.__pp.audioState = () => (actx ? actx.state : 'none')
 
   // ---- direct connection ----
-  function stopRtc(tellHost) {
+  function stopRtc(tellHost, why) {
     clearTimeout(rtcTimer)
+    bestGap = Infinity; badLog = []  // the other path has its own delay: measure lateness afresh
     const old = pc
     pc = dcCtl = null
     direct = false
     rtcPieces = []
     rtcPath = ''
     if (old) { old.onconnectionstatechange = null; try { old.close() } catch {} }
-    if (tellHost) wsSend({ t: 'rtc-off' })
+    if (tellHost) wsSend({ t: 'rtc-off', why: why || '' })
     render()
   }
   function startRtc(cfg) {
-    if (!cfg || !window.RTCPeerConnection || pc) return
-    const peer = pc = new RTCPeerConnection({ iceServers: cfg.iceServers })
+    if (!cfg || !window.RTCPeerConnection || pc || udpGaveUp) return
+    // #relay=1 in the link forces the TURN relay: for measuring that path from a network where direct would win.
+    const peer = pc = new RTCPeerConnection({ iceServers: cfg.iceServers, iceTransportPolicy: /[#&]relay=1/.test(location.hash) ? 'relay' : 'all' })
     const ctl = dcCtl = peer.createDataChannel('ctl')
     const video = peer.createDataChannel('video')
     const sound = peer.createDataChannel('audio', { ordered: false, maxRetransmits: 0 })
     video.binaryType = sound.binaryType = 'arraybuffer'
     peer.onicecandidate = e => { if (e.candidate && pc === peer) wsSend({ t: 'rtc-cand', c: e.candidate.toJSON() }) }
-    ctl.onopen = () => { if (pc !== peer) return; direct = true; clearTimeout(rtcTimer); waitKey = true; render() }
+    ctl.onopen = () => { if (pc !== peer) return; direct = true; clearTimeout(rtcTimer); waitKey = true; bestGap = Infinity; badLog = []; render() }
     ctl.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'pong' && m.n === pingN) rtt = Math.round(performance.now() - pingAt) }
     video.onmessage = e => {
       if (typeof e.data === 'string') { rtcPieces = []; configure(JSON.parse(e.data)); return }  // codec config, in order with the frames
@@ -407,14 +409,22 @@
   setInterval(() => {
     const fps = frames, kb = Math.round(bytes * 8 / 1000)
     frames = 0; bytes = 0
-    $('stats').textContent = gotFrame ? `${direct ? 'direct' : 'relayed'} · ${canvas.width}×${canvas.height} · ${fps} fps · ${(kb / 1000).toFixed(1)} Mbps` + (rtt != null ? ` · ${rtt} ms` : '') : ''
-    $('stats').title = direct ? 'Direct connection between the two computers (' + rtcPath + ')' : 'Video goes via a relay server: more delay'
+    $('stats').textContent = gotFrame ? `${direct ? (/relay/.test(rtcPath) ? 'TURN relay' : 'direct') : 'relayed'} · ${canvas.width}×${canvas.height} · ${fps} fps · ${(kb / 1000).toFixed(1)} Mbps` + (rtt != null ? ` · ${rtt} ms` : '') : ''
+    $('stats').title = direct ? (/relay/.test(rtcPath) ? 'Through a TURN relay, still UDP (' : 'Direct connection between the two computers (') + rtcPath + ')' : 'Video goes via a relay server: more delay'
     rtcStats().catch(() => {})
     window.__pp.fps = fps
     window.__pp.kbps = kb
     window.__pp.late = Math.round(late)
     // Tell the host what really arrives: behind a relay it cannot see a slow link from its own side.
     if (gotFrame && state.sharing) send({ t: 'stat', fps, late: Math.round(late), skipped })
+    // UDP is only worth having while it beats the tunnel. Some networks (phone hotspots, carriers that
+    // throttle UDP) lose so much that frames arrive seconds late: after four such seconds out of six,
+    // go back to the tunnel and stay there for this visit.
+    if (direct) {
+      badLog.push(late > 300 || skipped > 0 ? 1 : 0)
+      if (badLog.length > 6) badLog.shift()
+      if (badLog.reduce((a, b) => a + b, 0) >= 4) { udpGaveUp = true; stopRtc(true, 'slow'); waitKey = true; toast('Direct path is too lossy — switched to the relay') }
+    }
     late = 0; skipped = 0
   }, 1000)
   setInterval(() => { pingN++; pingAt = performance.now(); send({ t: 'ping', n: pingN }) }, 2000)

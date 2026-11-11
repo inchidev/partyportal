@@ -26,6 +26,7 @@ Sources/partyportal/
   VirtualDisplay.swift  a software-only monitor (CGVirtualDisplay) the shared window is parked on in background mode
   Bridge.swift       the WebRTC peer: web/bridge.html in a 2×2 px WebKit window
   Tunnel.swift       cloudflared quick tunnel with its own empty config
+  Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
 web/guest.html       guest page: WebCodecs → canvas, Web Audio, mouse/keys/touch → host
 web/host.html        host panel

@@ -78,7 +78,8 @@ final class Core {
     private var ownMoveUntil = 0.0
 
     // Direct connection (WebRTC through the bridge page in an invisible web view)
-    private static let iceServers: [[String: Any]] = [["urls": ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"]]]
+    private let turn: TurnRelay
+    private var turnWarned = false
     private let bridgeHost = BridgeHost()
     private let bridgeSecret = Core.newToken()
     private var bridgeWS: WebSocket?
@@ -112,6 +113,7 @@ final class Core {
     init(_ opts: Options) {
         self.opts = opts
         store = ConfigStore(path: opts.configPath)
+        turn = TurnRelay(configDir: store.url.deletingLastPathComponent())
         settings = store.load()
         token = opts.token ?? Core.newToken()
         webDir = Core.findWebDir(opts.webDir)
@@ -196,6 +198,7 @@ final class Core {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.bridgeHost.start(url: url) }
         }
         addLog("info", "Host panel: http://127.0.0.1:\(opts.adminPort)")
+        if turn.configured { addLog("info", "TURN relay is set up: guests behind strict networks connect through it") }
         if opts.fake {
             startFake()
         } else if let wanted = opts.autoWindow {
@@ -791,21 +794,32 @@ final class Core {
             // A guest is watching: do not let the display or the Mac fall asleep under them.
             awake = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleDisplaySleepDisabled], reason: "PartyPortal: a guest is connected")
             addLog("info", "Guest connected (\(ws.remote))")
-            let direct = bridgeWS != nil && settings.video.direct
-            ws.send(json: ["type": "hello", "rtc": direct ? ["iceServers": Core.iceServers] as [String: Any] : NSNull() as Any])
             sendState()
             kickVideo()
+            // The invitation to connect directly waits for the relay credential (a moment, a few seconds at worst);
+            // video already flows over this socket meanwhile.
+            let invited = guest
+            turn.servers { [weak self] servers, relay in
+                guard let self, let g = self.guest, g === invited else { return }
+                if self.turn.configured, !relay, !self.turnWarned {
+                    self.turnWarned = true
+                    self.addLog("warn", "TURN relay did not answer — trying a direct connection without it")
+                }
+                let direct = self.bridgeWS != nil && self.settings.video.direct
+                g.ws.send(json: ["type": "hello", "rtc": direct ? ["iceServers": servers] as [String: Any] : NSNull() as Any])
+            }
             return
         }
         switch type {
         case "rtc-offer":
             guard let sdp = m["sdp"] as? String, sdp.count < 20000, settings.video.direct, let bridge = bridgeWS else { return }
             rtcDown(note: nil)
-            bridge.send(json: ["s": "offer", "sdp": sdp, "ice": Core.iceServers])
+            bridge.send(json: ["s": "offer", "sdp": sdp, "ice": turn.current])
         case "rtc-cand":
             if let c = m["c"] as? [String: Any] { bridgeWS?.send(json: ["s": "cand", "c": c]) }
         case "rtc-off":
-            rtcDown(note: "Direct connection failed — video goes via relay")
+            let slow = (m["why"] as? String) == "slow"
+            rtcDown(note: slow ? "The UDP path to the guest loses too much — video goes via the tunnel instead" : "Direct connection failed — video goes via relay")
             bridgeWS?.send(json: ["s": "reset"])
         case "ping":
             ws.send(json: ["type": "pong", "n": m["n"] ?? 0])
@@ -839,7 +853,7 @@ final class Core {
     private func bridgeOpened(_ ws: WebSocket) {
         bridgeWS = ws
         // A guest who connected before the bridge was ready (or while it was reloading) gets the invitation now.
-        if settings.video.direct { guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": Core.iceServers]]) }
+        if settings.video.direct { guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": turn.current]]) }
         ws.onText = { [weak self, weak ws] text in
             guard let self, let ws, self.bridgeWS === ws else { return }
             self.bridgeMessage(text)
@@ -905,9 +919,10 @@ final class Core {
     private func guestStat(_ g: Guest, fps guestFps: Int, late: Int, skipped: Int) {
         g.fps = max(-1, min(guestFps, 240))
         g.late = max(0, min(late, 60_000))
-        let slow = skipped > 0 || late > 250
+        // One late second is ordinary jitter on a mobile link; frames thrown away, or lateness that stays, is not.
+        let slow = skipped > 0 || late > 300
         g.behind = slow ? g.behind + 1 : 0
-        if slow { squeeze() }
+        if skipped > 0 || g.behind >= 2 { squeeze() }
         if g.behind >= 3, !g.warned {
             g.warned = true
             addLog("warn", "The guest sees \(g.fps) of \(fps) fps: their link or computer is not keeping up\(rtcUp ? "" : " (video goes via relay)")")
@@ -917,7 +932,8 @@ final class Core {
 
     /// The link is not keeping up: lower the bitrate now, creep back up later.
     private func squeeze() {
-        guard uptime - lastSqueeze > 1 else { return }
+        // PP_FIXED_KBPS=1 holds the bitrate still, to measure what a path carries.
+        guard uptime - lastSqueeze > 1, ProcessInfo.processInfo.environment["PP_FIXED_KBPS"] == nil else { return }
         lastSqueeze = uptime
         setLiveKbps(max(800, liveKbps * 7 / 10))
     }
@@ -967,6 +983,7 @@ final class Core {
         }
         if let g = guest { s["guest"] = ["since": g.since, "control": g.control, "addr": g.ws.remote, "direct": rtcUp, "path": rtcPath, "fps": g.fps, "late": g.late] }
         s["liveKbps"] = liveKbps
+        s["turn"] = turn.configured
         s["bridge"] = bridgeWS != nil
         s["bridgeDiag"] = bridgeDiag
         return s
@@ -1122,7 +1139,7 @@ final class Core {
                 rtcDown(note: "Direct connection turned off by the host")
                 bridgeWS?.send(json: ["s": "reset"])
             } else if !wasDirect, video.direct, bridgeWS != nil {
-                guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": Core.iceServers]])  // invite the guest to try again
+                guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": turn.current]])  // invite the guest to try again
             }
         }
         if let list = decode([MaskRect].self, from: body["masks"]), let t = target {

@@ -123,6 +123,14 @@ credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Transport.** There is no bundled WebRTC library: the host side uses the one inside WebKit, in a 2×2 pixel
   window in a corner of the screen (it has to count as visible, or macOS pauses it and frames arrive in clumps).
   If a direct connection cannot be made, everything falls back to the WebSocket.
+- **Relay (optional).** Behind a symmetric NAT — phone hotspots, many mobile carriers — no direct path exists.
+  With a [Cloudflare Realtime TURN](https://developers.cloudflare.com/realtime/turn/) key of your own, media goes
+  host → relay → guest over UDP instead. Create a TURN Server app in the dashboard and put its two values in
+  `~/Library/Application Support/PartyPortal/turn.json` as `{"keyId": "…", "apiToken": "…"}` (or in
+  `PP_TURN_KEY_ID` / `PP_TURN_API_TOKEN`). The key stays on your Mac; each guest gets a credential that expires.
+- **The guest reports back.** Once a second the page says how many frames it really showed and how late they
+  were. The host lowers the bitrate on that, and a guest whose UDP path keeps arriving late goes back to the
+  tunnel by itself.
 - **Two local ports**, both bound to `127.0.0.1`: `7373` for the host panel (checks `Host` and `Origin`, never
   tunnelled) and `7374` for the guest. The guest's key lives in the URL fragment, so the tunnel never sees it.
 
@@ -148,7 +156,10 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
 
 ## Known gaps
 
-- A direct connection between two different networks has not been measured yet.
+- Video travels in WebRTC data channels, which back off hard on packet loss. Measured on a phone hotspot
+  (2–3% loss, UDP falling apart above ~2 Mbps): the relayed UDP path carried under 1 Mbps, the tunnel carried
+  8 Mbps. Real media tracks are the fix and are not built yet; until then such guests end up on the tunnel.
+- A direct connection between two different networks with healthy UDP has not been measured yet.
 - One guest at a time. Spectators and passing control between guests are planned.
 - Menus, pop-ups and dialogs of the shared app are separate macOS windows: the guest cannot see or click them.
 - Sound is the whole app's, not the single window's: share a browser window and the guest hears every tab.
@@ -157,7 +168,7 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
   from events; only Unity is recognised so far, other engines of that kind will simply ignore the guest's mouse.
 - With your pointer, the mouse and the focus are shared: you cannot use that Mac for something else, and anything
   that takes the focus away pauses the guest until their next click.
-- With strict NAT on both sides there is no direct path and the fallback is slower. A relay is planned.
+- With strict NAT and no TURN key of your own there is no direct path and the fallback is slower.
 - WebRTC data channels can stall for about 0.2 s when a packet is lost.
 - macOS host only. A Windows host is planned.
 
