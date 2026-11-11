@@ -28,9 +28,9 @@ Sources/partyportal/
   Tunnel.swift       cloudflared quick tunnel with its own empty config
   Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
-web/guest.html       guest page: WebCodecs → canvas, Web Audio, mouse/keys/touch → host
+web/guest.html       guest page: media track → <video> over the canvas (or WebCodecs → canvas), Web Audio, mouse/keys/touch → host
 web/host.html        host panel
-web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC data channels to the guest
+web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC to the guest (video as a media track from a worker, the rest in data channels)
 site/                the landing page (static)
 tools/smoke.mjs      protocol check without a browser
 Tests/               unit tests for InputPolicy and settings
@@ -77,6 +77,14 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - Verify video by pixels: in `--fake` the quadrants are (200,40,40), (40,160,60), (40,80,200), (220,180,40) and
   the white box is at x 0.55–0.90, y 0.10–0.22. The guest page exposes `window.__pp` (state, fps, audio counters,
   `late` = how far behind the best case frames arrive, `trace` for per-frame timing).
+- In track mode read `window.__pp.track` instead (fps, kbps, `freeze` ms, lost %, size, jitter buffer ms) and
+  `bridgeDiag.track` in `/api/state` for the sender's side (encoder fps, size, `limit`, WebRTC's `budget`).
+  Take pixels from the `<video id="tv">`, not the canvas — the canvas is stale while a track plays.
+- Transport knobs: `#relay=1` in a guest link forces the TURN relay, `#track=0` forces the data channel;
+  `PP_ICE=local` drops STUN and TURN (same-network path only), `PP_FIXED_KBPS=1` stops bitrate adaptation,
+  `PP_FAKE_FULL_FPS=1` lets the test picture run at the configured rate instead of 30.
+- `PP_FAKE_NOISE` is incompressible on purpose: at low bitrates VideoToolbox drops to a few fps by itself and
+  WebRTC shrinks the picture. Read neither as transport loss.
 - The test window answers signals: `SIGUSR1` resize, `SIGUSR2` close, `SIGHUP` toggle full screen, `SIGALRM`
   toggle a −48 dB tone (inaudible, easy to measure).
 - A child process started from a terminal inherits that terminal's Screen Recording permission, not Accessibility.
@@ -84,6 +92,14 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 
 ## Traps already stepped on
 
+- **A locked screen breaks measurements.** Windows stop drawing (ScreenCaptureKit delivers nothing) and macOS
+  slows the bridge page down (pauses of ~200 ms show up as `inGap` and as freezes at the guest). Only `--fake`
+  is worth running then, and its freeze counts are inflated.
+- **Data channels are not a media transport.** SCTP reads loss as congestion: at 2–3% loss on a phone hotspot the
+  video channel carried under 1 Mbps, seconds late, where the same path held 2 Mbps of plain UDP. That is why
+  video moved to a media track; keep sound and input small enough not to care.
+- **WebKit hides the Mac's LAN address** behind a `.local` name the guest's browser may not resolve (seen on a
+  phone hotspot: no same-network path at all). `Bridge.swift` switches that filtering off.
 - **The bridge window must be visible.** A WebKit page that is hidden, off screen or covered is paused for about
   220 ms out of every 330; frames then arrive in clumps, up to 230 ms late. Hence the 2×2 px window in a screen
   corner, on every Space including full-screen ones. Private WebKit switches for this were tried and do nothing.

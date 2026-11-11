@@ -107,7 +107,7 @@ credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 ```
  your Mac                                                      guest's browser
 ┌──────────────────────────────────────────────┐              ┌──────────────────────┐
-│ ScreenCaptureKit (one window) → masks        │   WebRTC     │ WebCodecs → <canvas> │
+│ ScreenCaptureKit (one window) → masks        │   WebRTC     │ <video> (media track)│
 │   → VideoToolbox H.264 ─┐                    │   UDP, P2P   │ Opus → Web Audio     │
 │ app audio → Opus ───────┼→ bridge (WebKit) ══╪══════════════╪→ mouse, keys, touch  │
 │ CGEvent ← input rules ←─┘                    │              │                      │
@@ -123,14 +123,21 @@ credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Transport.** There is no bundled WebRTC library: the host side uses the one inside WebKit, in a 2×2 pixel
   window in a corner of the screen (it has to count as visible, or macOS pauses it and frames arrive in clumps).
   If a direct connection cannot be made, everything falls back to the WebSocket.
+- **Video is a real media track.** The web view decodes the host's H.264 in a worker and hands the frames to
+  WebRTC (`VideoTrackGenerator`), which encodes them again with its own congestion control, retransmissions and
+  jitter buffer — so packet loss costs sharpness for a moment instead of seconds of delay. The host's own encoder
+  then only feeds the web view next door, at a generous bitrate. Masks are painted before that first encoder,
+  so the web view never holds an unmasked frame. Where WebKit cannot make a track (before macOS 15) the picture
+  travels in a data channel as before; `#track=0` in a guest link forces that, for comparison. Sound and input
+  stay in data channels.
 - **Relay (optional).** Behind a symmetric NAT — phone hotspots, many mobile carriers — no direct path exists.
   With a [Cloudflare Realtime TURN](https://developers.cloudflare.com/realtime/turn/) key of your own, media goes
   host → relay → guest over UDP instead. Create a TURN Server app in the dashboard and put its two values in
   `~/Library/Application Support/PartyPortal/turn.json` as `{"keyId": "…", "apiToken": "…"}` (or in
   `PP_TURN_KEY_ID` / `PP_TURN_API_TOKEN`). The key stays on your Mac; each guest gets a credential that expires.
 - **The guest reports back.** Once a second the page says how many frames it really showed and how late they
-  were. The host lowers the bitrate on that, and a guest whose UDP path keeps arriving late goes back to the
-  tunnel by itself.
+  were. On the tunnel and in a data channel the host lowers the bitrate on that; a guest whose picture keeps
+  standing still on the UDP path goes back to the tunnel by itself.
 - **Two local ports**, both bound to `127.0.0.1`: `7373` for the host panel (checks `Host` and `Origin`, never
   tunnelled) and `7374` for the guest. The guest's key lives in the URL fragment, so the tunnel never sees it.
 
@@ -153,13 +160,20 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
   keyboard from a full-screen Space; a native MMO client driven by mouse, wheel and keyboard (interface clicks,
   camera rotation and zoom, turning, movement).
 - Direct connection on one Mac through the router: 8 Mbps, no frames lost, frames 13 ms late on average.
+- Media track on one Mac: same colours as the data-channel path (pixel check), clicks and keys land where aimed
+  with the `<video>` on top, 60 fps in → 50–60 fps shown, about 10 ms of buffering; a track that never starts
+  sends the guest back to the tunnel within a few seconds.
 
 ## Known gaps
 
-- Video travels in WebRTC data channels, which back off hard on packet loss. Measured on a phone hotspot
-  (2–3% loss, UDP falling apart above ~2 Mbps): the relayed UDP path carried under 1 Mbps, the tunnel carried
-  8 Mbps. Real media tracks are the fix and are not built yet; until then such guests end up on the tunnel.
-- A direct connection between two different networks with healthy UDP has not been measured yet.
+- The media track has only been measured with the synthetic test picture so far (same Mac, and through the
+  TURN relay over a phone hotspot with 2–3% loss: 50–60 fps and about 0.1 s of buffering where the data channel
+  gave 2–7 fps arriving seconds late — at the price of resolution, which WebRTC lowers to fit the link).
+  A real window, a real game and a guest on another network are still to be measured.
+- On a link that poor WebRTC is cautious: it settled near 0.5 Mbps on a path that carried 2 Mbps of plain UDP.
+- Sound still travels in a data channel and is not synchronised with the track's jitter buffer.
+- While the Mac's screen is locked, windows do not draw and there is nothing to capture; the web view is also
+  slowed down by macOS then.
 - One guest at a time. Spectators and passing control between guests are planned.
 - Menus, pop-ups and dialogs of the shared app are separate macOS windows: the guest cannot see or click them.
 - Sound is the whole app's, not the single window's: share a browser window and the guest hears every tab.
@@ -169,7 +183,7 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
 - With your pointer, the mouse and the focus are shared: you cannot use that Mac for something else, and anything
   that takes the focus away pauses the guest until their next click.
 - With strict NAT and no TURN key of your own there is no direct path and the fallback is slower.
-- WebRTC data channels can stall for about 0.2 s when a packet is lost.
+- Without a media track (macOS 14), the data channel stalls on packet loss.
 - macOS host only. A Windows host is planned.
 
 ## Roadmap

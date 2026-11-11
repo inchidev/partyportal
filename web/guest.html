@@ -22,6 +22,9 @@
   #stage { position: absolute; inset: 40px 0 0 0; display: flex; align-items: center; justify-content: center; }
   :fullscreen #bar { display: none; } :fullscreen #stage { inset: 0; }
   canvas { display: block; background: #000; outline: none; }
+  #frame { position: relative; }
+  #tv { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; pointer-events: none; }
+  #tv[hidden] { display: none; }
   canvas.live { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9'%3E%3Ccircle cx='4.5' cy='4.5' r='3' fill='white' fill-opacity='.55' stroke='black' stroke-opacity='.6'/%3E%3C/svg%3E") 4 4, crosshair; }
   #veil { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; pointer-events: none; }
   #veil div { max-width: 460px; background: rgba(11, 14, 18, .86); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; font-size: 15px; }
@@ -42,7 +45,7 @@
   <span id="stats"></span>
 </div>
 <div id="stage">
-  <canvas id="screen" width="1280" height="720" tabindex="0"></canvas>
+  <div id="frame"><canvas id="screen" width="1280" height="720" tabindex="0"></canvas><video id="tv" autoplay muted playsinline disablepictureinpicture hidden></video></div>
   <div id="veil"><div id="veilText">Connecting…</div></div>
   <div id="toast"></div>
 </div>
@@ -64,12 +67,15 @@
 
   // Two ways to the host: the WebSocket (through the tunnel) and, once it is up, a direct WebRTC connection.
   let pc = null, dcCtl = null, direct = false, rtcTimer = 0, rtcPieces = [], rtcPath = ''
+  // With a media track the picture plays in the <video> over the canvas; the canvas still takes every click.
+  const tv = $('tv')
+  let trackLive = false, trackPrev = null, track = { fps: 0, kbps: 0, freeze: 0, lost: 0, w: 0, h: 0, buffer: 0 }
   const wsSend = obj => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)) }
   const send = obj => {
     if (direct && dcCtl && dcCtl.readyState === 'open' && obj.t !== 'auth' && !obj.t.startsWith('rtc')) dcCtl.send(JSON.stringify(obj))
     else wsSend(obj)
   }
-  window.__pp = { get direct() { return direct }, get rtcPath() { return rtcPath }, get state() { return state }, get frames() { return frames }, get gotFrame() { return gotFrame }, send }
+  window.__pp = { get direct() { return direct }, get rtcPath() { return rtcPath }, get state() { return state }, get frames() { return frames }, get gotFrame() { return gotFrame }, get track() { return trackLive ? track : null }, send }
 
   function veil(text, sub) {
     $('veil').hidden = !text
@@ -213,6 +219,16 @@
   window.__pp.audioState = () => (actx ? actx.state : 'none')
 
   // ---- direct connection ----
+  // The track's first frame (and any later change of its size): the <video> takes over the picture.
+  function onTrackSize() {
+    if (!tv.srcObject || !tv.videoWidth) return
+    if (canvas.width !== tv.videoWidth || canvas.height !== tv.videoHeight) { canvas.width = tv.videoWidth; canvas.height = tv.videoHeight; layout() }
+    if (!trackLive) { trackLive = true; tv.hidden = false; bestGap = Infinity; badLog = [] }
+    if (!gotFrame) gotFrame = true
+    render()
+  }
+  tv.addEventListener('loadeddata', onTrackSize)
+  tv.addEventListener('resize', onTrackSize)
   function stopRtc(tellHost, why) {
     clearTimeout(rtcTimer)
     bestGap = Infinity; badLog = []  // the other path has its own delay: measure lateness afresh
@@ -221,7 +237,9 @@
     direct = false
     rtcPieces = []
     rtcPath = ''
-    if (old) { old.onconnectionstatechange = null; try { old.close() } catch {} }
+    if (trackLive) { waitKey = true; send({ t: 'kf' }) }  // the canvas decoder sat idle while the track played
+    trackLive = false; trackPrev = null; tv.hidden = true; tv.srcObject = null
+    if (old) { old.onconnectionstatechange = null; old.ontrack = null; try { old.close() } catch {} }
     if (tellHost) wsSend({ t: 'rtc-off', why: why || '' })
     render()
   }
@@ -233,6 +251,26 @@
     const video = peer.createDataChannel('video')
     const sound = peer.createDataChannel('audio', { ordered: false, maxRetransmits: 0 })
     video.binaryType = sound.binaryType = 'arraybuffer'
+    // Offer to receive the picture as a media track; a host that cannot make one answers "inactive"
+    // and uses the video channel above. #track=0 in the link keeps to the channel, for comparing the two.
+    if (!/[#&]track=0/.test(location.hash) && peer.addTransceiver) {
+      try {
+        const tr = peer.addTransceiver('video', { direction: 'recvonly' })
+        const caps = window.RTCRtpReceiver && RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities('video')
+        if (caps && tr.setCodecPreferences) {
+          const h264 = caps.codecs.filter(c => /h264/i.test(c.mimeType))
+          if (h264.length) tr.setCodecPreferences([...h264, ...caps.codecs.filter(c => !/h264/i.test(c.mimeType))])
+        }
+      } catch {}
+    }
+    peer.ontrack = e => {
+      if (pc !== peer || e.track.kind !== 'video') return
+      // Live picture, not a film: show each frame as soon as it is whole.
+      try { e.receiver.jitterBufferTarget = 0 } catch {}
+      try { e.receiver.playoutDelayHint = 0 } catch {}
+      tv.srcObject = new MediaStream([e.track])
+      tv.play().catch(() => {})
+    }
     peer.onicecandidate = e => { if (e.candidate && pc === peer) wsSend({ t: 'rtc-cand', c: e.candidate.toJSON() }) }
     ctl.onopen = () => { if (pc !== peer) return; direct = true; clearTimeout(rtcTimer); waitKey = true; bestGap = Infinity; badLog = []; render() }
     ctl.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'pong' && m.n === pingN) rtt = Math.round(performance.now() - pingAt) }
@@ -257,8 +295,9 @@
       else if (peer.connectionState === 'disconnected') lost = setTimeout(() => { if (pc === peer && peer.connectionState !== 'connected') stopRtc(true) }, 3000)
     }
     peer.createOffer().then(o => peer.setLocalDescription(o)).then(() => { if (pc === peer) wsSend({ t: 'rtc-offer', sdp: peer.localDescription.sdp }) }).catch(() => stopRtc(true))
-    // No direct path within ten seconds (strict NAT on both sides): stay on the WebSocket.
-    rtcTimer = setTimeout(() => { if (pc === peer && !direct) stopRtc(true) }, 10000)
+    // No direct path within fifteen seconds (strict NAT on both sides and no relay): stay on the WebSocket.
+    // A relay on a slow mobile link was seen to need more than ten.
+    rtcTimer = setTimeout(() => { if (pc === peer && !direct) stopRtc(true) }, 15000)
   }
   async function rtcStats() {
     if (!pc || !direct) return
@@ -268,6 +307,21 @@
     if (!pair) return
     const local = stats.get(pair.localCandidateId) || {}, remote = stats.get(pair.remoteCandidateId) || {}
     rtcPath = `${(local.protocol || 'udp').toUpperCase()} ${local.candidateType}/${remote.candidateType}`
+    if (pair.currentRoundTripTime != null && tv.srcObject) rtt = Math.round(pair.currentRoundTripTime * 1000)
+    let rx = null
+    stats.forEach(s => { if (s.type === 'inbound-rtp' && s.kind === 'video') rx = s })
+    if (!rx) return
+    const now = { at: performance.now(), frames: rx.framesDecoded || 0, bytes: rx.bytesReceived || 0, freeze: rx.totalFreezesDuration || 0,
+                  lost: rx.packetsLost || 0, got: rx.packetsReceived || 0, delay: rx.jitterBufferDelay || 0, out: rx.jitterBufferEmittedCount || 0 }
+    const was = trackPrev
+    trackPrev = now
+    if (!was) return
+    const dt = Math.max(0.2, (now.at - was.at) / 1000), packets = (now.got - was.got) + (now.lost - was.lost)
+    track = {
+      fps: Math.round((now.frames - was.frames) / dt), kbps: Math.round((now.bytes - was.bytes) * 8 / 1000 / dt),
+      freeze: Math.round((now.freeze - was.freeze) * 1000), lost: packets > 0 ? Math.round((now.lost - was.lost) * 1000 / packets) / 10 : 0,
+      w: rx.frameWidth || 0, h: rx.frameHeight || 0, buffer: now.out > was.out ? Math.round((now.delay - was.delay) * 1000 / (now.out - was.out)) : 0,
+    }
   }
 
   // ---- connection ----
@@ -407,9 +461,11 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) release() })
 
   setInterval(() => {
-    const fps = frames, kb = Math.round(bytes * 8 / 1000)
+    // With a media track the numbers come from the receiver; otherwise from what we decoded ourselves.
+    const fps = trackLive ? track.fps : frames, kb = trackLive ? track.kbps : Math.round(bytes * 8 / 1000)
+    if (trackLive) late = track.freeze  // milliseconds of this second the picture stood still
     frames = 0; bytes = 0
-    $('stats').textContent = gotFrame ? `${direct ? (/relay/.test(rtcPath) ? 'TURN relay' : 'direct') : 'relayed'} · ${canvas.width}×${canvas.height} · ${fps} fps · ${(kb / 1000).toFixed(1)} Mbps` + (rtt != null ? ` · ${rtt} ms` : '') : ''
+    $('stats').textContent = gotFrame ? `${direct ? (/relay/.test(rtcPath) ? 'TURN relay' : 'direct') : 'relayed'} · ${canvas.width}×${canvas.height} · ${fps} fps · ${(kb / 1000).toFixed(1)} Mbps` + (rtt != null ? ` · ${rtt} ms` : '') + (trackLive && track.lost >= 0.5 ? ` · ${track.lost}% lost` : '') : ''
     $('stats').title = direct ? (/relay/.test(rtcPath) ? 'Through a TURN relay, still UDP (' : 'Direct connection between the two computers (') + rtcPath + ')' : 'Video goes via a relay server: more delay'
     rtcStats().catch(() => {})
     window.__pp.fps = fps
@@ -421,7 +477,9 @@
     // throttle UDP) lose so much that frames arrive seconds late: after four such seconds out of six,
     // go back to the tunnel and stay there for this visit.
     if (direct) {
-      badLog.push(late > 300 || skipped > 0 ? 1 : 0)
+      // A track rides out loss by itself, so only a picture that stands still (or never starts) counts against it.
+      const waitingForTrack = !!tv.srcObject && !trackLive
+      badLog.push((trackLive ? late > 500 : waitingForTrack || late > 300 || skipped > 0) ? 1 : 0)
       if (badLog.length > 6) badLog.shift()
       if (badLog.reduce((a, b) => a + b, 0) >= 4) { udpGaveUp = true; stopRtc(true, 'slow'); waitKey = true; toast('Direct path is too lossy — switched to the relay') }
     }

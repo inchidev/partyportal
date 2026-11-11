@@ -200,7 +200,7 @@ final class FakeSource: FrameSource {
 
     init(queue: DispatchQueue, video: VideoSettings) {
         self.queue = queue
-        fps = min(30, video.fps)
+        fps = ProcessInfo.processInfo.environment["PP_FAKE_FULL_FPS"] != nil ? video.fps : min(30, video.fps)  // full rate only for transport tests
         let attrs: [CFString: Any] = [
             kCVPixelBufferWidthKey: Int(Self.size.width), kCVPixelBufferHeightKey: Int(Self.size.height),
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,

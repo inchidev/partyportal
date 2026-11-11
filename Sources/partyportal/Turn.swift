@@ -24,7 +24,7 @@ final class TurnRelay {
     private var cachedAt = Date.distantPast
     private var waiting: [([[String: Any]]) -> Void] = []
 
-    var configured: Bool { key != nil }
+    var configured: Bool { key != nil && ProcessInfo.processInfo.environment["PP_ICE"] != "local" }
 
     init(configDir: URL) {
         let env = ProcessInfo.processInfo.environment
@@ -44,6 +44,7 @@ final class TurnRelay {
 
     /// What is known right now, without waiting: the last minted set while it is fresh, STUN alone otherwise.
     var current: [[String: Any]] {
+        if ProcessInfo.processInfo.environment["PP_ICE"] == "local" { return [] }
         if let cached, Date().timeIntervalSince(cachedAt) < Double(Self.ttl) / 2 { return cached }
         return Self.stunOnly
     }
@@ -51,6 +52,8 @@ final class TurnRelay {
     /// ICE servers for a new guest. Calls back on the main queue, within a few seconds at worst;
     /// without a key, or when Cloudflare does not answer, that is STUN alone and `relay` is false.
     func servers(_ done: @escaping (_ servers: [[String: Any]], _ relay: Bool) -> Void) {
+        // PP_ICE=local: no STUN, no relay — only addresses on this network. For testing the pipeline itself.
+        if ProcessInfo.processInfo.environment["PP_ICE"] == "local" { return done([], false) }
         guard let key else { return done(Self.stunOnly, false) }
         // A credential lives 12 hours; a guest arriving within the first hour of it can share it.
         if let cached, Date().timeIntervalSince(cachedAt) < 3600 { return done(cached, true) }

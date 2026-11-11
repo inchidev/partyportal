@@ -8,9 +8,13 @@
 //
 // From PartyPortal:  binary media messages (same framing the guest gets over WebSocket) and JSON {s: …}.
 // To PartyPortal:    JSON {b: …} about the connection, and the guest's own JSON messages forwarded untouched.
-// To the guest, three data channels:
-//   video  reliable, ordered; a frame is split into pieces, first byte 1 marks the last piece;
-//          the codec config travels on the same channel as text, so it always arrives before its keyframe
+// To the guest, video as a real media track when this WebKit can make one (VideoTrackGenerator): frames from
+// PartyPortal are decoded here and handed to WebRTC, which encodes them again with its own rate control,
+// retransmissions and jitter buffer. A data channel treats loss as congestion and stalls; a media track is
+// built for it. Masks are painted before PartyPortal's encoder, so nothing unmasked reaches this page.
+// Otherwise, and for everything else, three data channels:
+//   video  (only without a track) reliable, ordered; a frame is split into pieces, first byte 1 marks the
+//          last piece; the codec config travels on the same channel as text, so it arrives before its keyframe
 //   audio  unreliable, unordered; one Opus packet per message, late sound is dropped rather than replayed
 //   ctl    reliable; the guest's input and our pongs
 (() => {
@@ -22,10 +26,89 @@
 
   const tell = obj => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)) }
 
+  // ---- video as a media track ----
+  // A worker decodes PartyPortal's H.264 and writes the frames into a VideoTrackGenerator; its track is
+  // transferred here once and reused for every guest. No requestAnimationFrame anywhere: this page is 2×2 px.
+  const WORKER = `
+    let dec = null, writer = null, waitKey = true
+    const b64 = s => { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
+    try {
+      const gen = new VideoTrackGenerator()
+      writer = gen.writable.getWriter()
+      self.postMessage({ track: gen.track }, [gen.track])
+    } catch (e) { self.postMessage({ fail: String(e) }) }
+    function configure(cfg) {
+      try { if (dec && dec.state !== 'closed') dec.close() } catch {}
+      dec = new VideoDecoder({
+        output: f => { writer.write(f).then(() => { try { f.close() } catch {} }, () => { try { f.close() } catch {} }) },
+        error: e => { waitKey = true; self.postMessage({ kf: 1, err: String(e) }) },
+      })
+      dec.configure({ codec: cfg.codec, description: b64(cfg.description), optimizeForLatency: true })
+      waitKey = true
+    }
+    self.onmessage = e => {
+      const m = e.data
+      if (m.cfg) { try { configure(m.cfg) } catch (err) { self.postMessage({ fail: 'configure: ' + err }) } return }
+      if (!writer || !dec || dec.state !== 'configured') return
+      const view = new DataView(m), key = (view.getUint8(1) & 1) === 1
+      if (waitKey && !key) return
+      if (dec.decodeQueueSize > 4) { waitKey = true; self.postMessage({ kf: 1 }); return }  // fell behind: wait for a keyframe
+      waitKey = false
+      dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(view.getBigInt64(2)), data: new Uint8Array(m, 10) }))
+    }
+  `
+  let worker = null, genTrack = null, trackWhy = 'starting', lastCfg = null, sender = null, sentKbps = 0, lastOut = null
+  try {
+    if (!('VideoDecoder' in window)) throw new Error('no WebCodecs')
+    worker = new Worker(URL.createObjectURL(new Blob([WORKER], { type: 'text/javascript' })))
+    worker.onmessage = e => {
+      if (e.data.track) { genTrack = e.data.track; trackWhy = '' }
+      else if (e.data.fail) { genTrack = null; trackWhy = e.data.fail }
+      else if (e.data.kf) tell({ b: 'kf' })
+    }
+    worker.onerror = e => { genTrack = null; trackWhy = 'worker: ' + (e.message || 'error') }
+  } catch (e) { trackWhy = String(e) }
+
+  // The ceiling WebRTC may use; under it, it picks the rate the path can carry by itself.
+  async function capBitrate() {
+    if (!sender || sentKbps === kbps) return
+    try {
+      const p = sender.getParameters()
+      if (!p.encodings || !p.encodings.length) return
+      p.encodings[0].maxBitrate = kbps * 1000
+      p.encodings[0].maxFramerate = 60
+      await sender.setParameters(p)
+      sentKbps = kbps
+    } catch {}
+  }
+  async function trackInfo() {
+    if (!pc || !sender) return null
+    const stats = await pc.getStats()
+    let out = null, back = null, pair = null
+    stats.forEach(s => {
+      if (s.type === 'outbound-rtp' && s.kind === 'video') out = s
+      else if (s.type === 'remote-inbound-rtp' && s.kind === 'video') back = s
+      else if (s.type === 'candidate-pair' && s.availableOutgoingBitrate) pair = s
+    })
+    if (!out) return null
+    const prev = lastOut
+    lastOut = { at: performance.now(), bytes: out.bytesSent, frames: out.framesEncoded }
+    const dt = prev ? (lastOut.at - prev.at) / 1000 : 0
+    return {
+      fps: dt ? Math.round((lastOut.frames - prev.frames) / dt) : 0,
+      kbps: dt ? Math.round((lastOut.bytes - prev.bytes) * 8 / 1000 / dt) : 0,
+      w: out.frameWidth, h: out.frameHeight, limit: out.qualityLimitationReason || '',
+      lost: back && back.fractionLost != null ? Math.round(back.fractionLost * 1000) / 10 : null,
+      budget: pair ? Math.round(pair.availableOutgoingBitrate / 1000) : null,
+    }
+  }
+
   function closePeer() {
     const old = pc
-    pc = video = audio = ctl = null
+    pc = video = audio = ctl = sender = null
     dropping = askedKey = false
+    sentKbps = 0
+    lastOut = null
     if (old) { old.onconnectionstatechange = null; try { old.close() } catch {} }
   }
 
@@ -68,13 +151,13 @@
     closePeer()
     const peer = pc = new RTCPeerConnection({ iceServers: m.ice || [] })
     peer.onicecandidate = e => { if (e.candidate && pc === peer) tell({ b: 'sig', m: { type: 'rtc-cand', c: e.candidate.toJSON() } }) }
-    peer.onconnectionstatechange = () => { if (pc === peer && ['failed', 'closed'].includes(peer.connectionState)) { closePeer(); tell({ b: 'closed' }) } }
-    let announced = false
+    peer.onconnectionstatechange = () => { if (pc === peer && ['failed', 'closed'].includes(peer.connectionState)) { closePeer(); tell({ b: 'closed', why: 'no path to the guest (ICE ' + peer.iceConnectionState + ')' }) } }
+    let announced = false, asTrack = false
     // PartyPortal starts sending the moment we say "open", so say it only when all three channels can carry data.
     const ready = () => {
       if (pc !== peer || announced || ![ctl, video, audio].every(c => c && c.readyState === 'open')) return
       announced = true
-      tell({ b: 'open' })
+      tell({ b: 'open', track: asTrack })
     }
     peer.ondatachannel = e => {
       if (pc !== peer) return
@@ -95,10 +178,25 @@
       ready()
     }
     try {
-      await peer.setRemoteDescription({ type: 'offer', sdp: m.sdp })
+      // WebRTC starts a stream at about 0.3 Mbps and feels its way up for tens of seconds. Tell our encoder to
+      // start near what a desktop needs; if the path cannot carry it, it backs off within a second or two.
+      const start = Math.max(600, Math.min(1500, kbps))
+      const sdp = m.sdp.replace(/^(a=fmtp:\d+ (?!apt=)[^\r\n]*)/gm, `$1;x-google-start-bitrate=${start};x-google-min-bitrate=300`)
+      await peer.setRemoteDescription({ type: 'offer', sdp }).catch(() => peer.setRemoteDescription({ type: 'offer', sdp: m.sdp }))
+      // A guest that can play a track offers to receive one; we send it when we can make one.
+      const tr = peer.getTransceivers().find(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'video')
+      if (tr) {
+        if (genTrack && genTrack.readyState === 'live') {
+          tr.direction = 'sendonly'
+          await tr.sender.replaceTrack(genTrack)
+          sender = tr.sender
+          asTrack = true
+        } else tr.direction = 'inactive'
+      }
       const answer = await peer.createAnswer()
       await peer.setLocalDescription(answer)
       if (pc === peer) tell({ b: 'sig', m: { type: 'rtc-answer', sdp: answer.sdp } })
+      capBitrate()
     } catch (e) {
       if (pc === peer) { closePeer(); tell({ b: 'closed', why: String(e) }) }
     }
@@ -116,20 +214,29 @@
             const now = performance.now()
             if (lastIn) maxInGap = Math.max(maxInGap, now - lastIn)
             lastIn = now
-            maxBuffered = Math.max(maxBuffered, video.bufferedAmount)
-            sendVideo(e.data)
+            if (sender) worker.postMessage(e.data, [e.data])
+            else {
+              maxBuffered = Math.max(maxBuffered, video.bufferedAmount)
+              sendVideo(e.data)
+            }
           }
         } catch {}
         return
       }
       const m = JSON.parse(e.data)
-      if (m.type === 'video') { try { if (video && video.readyState === 'open') video.send(e.data) } catch {} }
+      if (m.type === 'video') {
+        lastCfg = m
+        if (worker) worker.postMessage({ cfg: m })
+        try { if (!sender && video && video.readyState === 'open') video.send(e.data) } catch {}
+      }
       else if (m.s === 'offer') onOffer(m)
       else if (m.s === 'cand') { try { if (pc) await pc.addIceCandidate(m.c) } catch {} }
       else if (m.s === 'reset') closePeer()
       else if (m.s === 'tick') {
         kbps = m.kbps || kbps
-        tell({ b: 'stats', inGap: Math.round(maxInGap), buffered: maxBuffered, path: await pathInfo().catch(() => null) })
+        capBitrate()
+        tell({ b: 'stats', inGap: Math.round(maxInGap), buffered: maxBuffered, path: await pathInfo().catch(() => null),
+               canTrack: !!genTrack, trackWhy, track: await trackInfo().catch(() => null) })
         maxInGap = maxBuffered = 0
       }
     }

@@ -14,6 +14,11 @@ final class BridgeHost: NSObject, WKNavigationDelegate {
         self.url = url
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // WebKit hides this Mac's local addresses behind one-off .local names, which the guest's browser cannot
+        // always resolve (phone hotspots, some routers) — and then two devices on the same network have no
+        // direct path. The guest is someone the host invited; let them see the LAN address.
+        let unfiltered = NSSelectorFromString("_setICECandidateFilteringEnabled:")
+        if config.preferences.responds(to: unfiltered) { config.preferences.perform(unfiltered, with: nil) }
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 120), configuration: config)
         view.navigationDelegate = self
 

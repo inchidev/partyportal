@@ -84,6 +84,10 @@ final class Core {
     private let bridgeSecret = Core.newToken()
     private var bridgeWS: WebSocket?
     private var rtcUp = false
+    /// The bridge sends video as a WebRTC media track: it re-encodes what we give it and steers the bitrate itself.
+    private var trackMode = false
+    /// For the hop to the bridge inside this Mac, bandwidth is free: encode well above what will be sent on.
+    private var localKbps: Int { trackMode ? min(40_000, max(12_000, settings.video.kbps * 2)) : settings.video.kbps }
     private var rtcPath = ""
     private var bridgeDiag: [String: Any] = [:]
     private var liveKbps = 0
@@ -662,9 +666,9 @@ final class Core {
             statFrames = 0
             statBytes = 0
             lock.unlock()
-            bridgeWS?.send(json: ["s": "tick", "kbps": liveKbps])
+            bridgeWS?.send(json: ["s": "tick", "kbps": trackMode ? settings.video.kbps : liveKbps])
             // The link has been keeping up for a while: creep back towards the bitrate the host asked for.
-            if liveKbps < settings.video.kbps, uptime - lastSqueeze > 8 {
+            if !trackMode, liveKbps < settings.video.kbps, uptime - lastSqueeze > 8 {
                 lastSqueeze = uptime - 4
                 setLiveKbps(min(settings.video.kbps, liveKbps * 115 / 100 + 50))
             }
@@ -766,6 +770,11 @@ final class Core {
         guest = nil
         rtcUp = false
         rtcPath = ""
+        if trackMode {
+            trackMode = false
+            liveKbps = 0
+            setLiveKbps(localKbps)
+        }
         bridgeWS?.send(json: ["s": "reset"])
         lock.lock()
         viewer = nil
@@ -877,20 +886,25 @@ final class Core {
         case "open":
             guard let g = guest, let bridge = bridgeWS else { return }
             rtcUp = true
+            trackMode = (m["track"] as? Bool) ?? false
+            liveKbps = 0
+            setLiveKbps(localKbps)
             lock.lock()
             viewer = bridge
             lock.unlock()
-            addLog("info", "Direct connection to the guest is up")
+            addLog("info", "Direct connection to the guest is up" + (trackMode ? " (video as a media track)" : " (video in a data channel)"))
             g.ws.send(json: ["type": "rtc-up"])
             kickVideo()
         case "closed":
+            if let why = m["why"] as? String, !why.isEmpty { addLog("warn", "Direct connection could not be set up: \(why.prefix(200))") }
             rtcDown(note: "Direct connection dropped — video goes via relay")
         case "kf":
             requestKey()
         case "drop":
             squeeze()
         case "stats":
-            bridgeDiag = ["inGap": m["inGap"] ?? 0, "buffered": m["buffered"] ?? 0]
+            bridgeDiag = ["inGap": m["inGap"] ?? 0, "buffered": m["buffered"] ?? 0, "canTrack": m["canTrack"] ?? false,
+                          "trackWhy": m["trackWhy"] ?? "", "track": m["track"] ?? NSNull()]
             if let path = m["path"] as? [String: Any] {
                 let names = ["host": "same network", "srflx": "over the internet", "prflx": "over the internet", "relay": "via TURN relay"]
                 let kind = [path["local"], path["remote"]].compactMap { $0 as? String }.contains("relay") ? "relay" : (path["remote"] as? String) ?? ""
@@ -906,6 +920,11 @@ final class Core {
         guard rtcUp else { return }
         rtcUp = false
         rtcPath = ""
+        if trackMode {
+            trackMode = false
+            liveKbps = 0
+            setLiveKbps(localKbps)
+        }
         lock.lock()
         viewer = guest?.ws
         lock.unlock()
@@ -922,7 +941,8 @@ final class Core {
         // One late second is ordinary jitter on a mobile link; frames thrown away, or lateness that stays, is not.
         let slow = skipped > 0 || late > 300
         g.behind = slow ? g.behind + 1 : 0
-        if skipped > 0 || g.behind >= 2 { squeeze() }
+        // With a media track WebRTC does the adapting; our encoder only feeds the bridge next door.
+        if !trackMode, skipped > 0 || g.behind >= 2 { squeeze() }
         if g.behind >= 3, !g.warned {
             g.warned = true
             addLog("warn", "The guest sees \(g.fps) of \(fps) fps: their link or computer is not keeping up\(rtcUp ? "" : " (video goes via relay)")")
@@ -933,7 +953,7 @@ final class Core {
     /// The link is not keeping up: lower the bitrate now, creep back up later.
     private func squeeze() {
         // PP_FIXED_KBPS=1 holds the bitrate still, to measure what a path carries.
-        guard uptime - lastSqueeze > 1, ProcessInfo.processInfo.environment["PP_FIXED_KBPS"] == nil else { return }
+        guard !trackMode, uptime - lastSqueeze > 1, ProcessInfo.processInfo.environment["PP_FIXED_KBPS"] == nil else { return }
         lastSqueeze = uptime
         setLiveKbps(max(800, liveKbps * 7 / 10))
     }
@@ -981,7 +1001,7 @@ final class Core {
                 "paused": orNull(pauseReason),
             ]
         }
-        if let g = guest { s["guest"] = ["since": g.since, "control": g.control, "addr": g.ws.remote, "direct": rtcUp, "path": rtcPath, "fps": g.fps, "late": g.late] }
+        if let g = guest { s["guest"] = ["since": g.since, "control": g.control, "addr": g.ws.remote, "direct": rtcUp, "path": rtcPath, "track": trackMode, "fps": g.fps, "late": g.late] }
         s["liveKbps"] = liveKbps
         s["turn"] = turn.configured
         s["bridge"] = bridgeWS != nil
@@ -1134,7 +1154,7 @@ final class Core {
             lock.unlock()
             source?.apply(video: video)
             liveKbps = 0
-            setLiveKbps(video.kbps)
+            setLiveKbps(localKbps)
             if wasDirect, !video.direct {
                 rtcDown(note: "Direct connection turned off by the host")
                 bridgeWS?.send(json: ["s": "reset"])
