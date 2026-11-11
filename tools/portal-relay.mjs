@@ -1,7 +1,8 @@
-// A local stand-in for a portal on an L4 Server or on llll.gg (relay protocol v1), to test portal mode without one.
+// A local stand-in for a portal on an L4 Server or on llll.gg (relay protocol v1, and v2 with --v2), to test portal
+// mode without one.
 //
 //   node tools/portal-relay.mjs [--host-key hk --guest-key gk [--id test]] [--port 8787] [--ice servers.json]
-//                               [--limit-bytes N] [--ttl SECONDS] [--version N] [--page web/guest.html]
+//                               [--limit-bytes N] [--ttl SECONDS] [--version N] [--v2] [--page web/guest.html]
 //
 //   GET  /portal/<id>, /p/<id>  the guest page (web/guest.html, read from disk on every request)
 //   WS   …/<id>/ws              the guest: first frame {"t":"auth","token":<guest key>} or close 4401;
@@ -18,6 +19,14 @@
 //                      closed with 4429 and the portal ends
 //   --ttl SECONDS      lifetime of portals made by POST /api/portals (default 12 h)
 //   --version N        the relay protocol version this stand-in speaks (default 1; anything else tests 4426)
+//   --v2               also speak relay protocol v2 (several viewers), with a FAKE SFU: a host saying "v":2 gets
+//                      {"t":"pp.ready","v":2,"sfu":true,"p2p":true}; that tells the Mac there is no SFU here, so its
+//                      bridge publishes once per admitted viewer ("g" in pp.sfu.publish) and this stand-in passes the
+//                      bridge's offer to that viewer as pp.sfu.offer and the viewer's answer back as pp.sfu.answer.
+//                      The media then goes peer to peer between the bridge and each guest page. Up to 16 guests;
+//                      frames are wrapped (pp.from / pp.to / pp.all) as on an L4 Server; pp.sfu.layer is refused
+//                      (no layers without an SFU). What this does NOT exercise: the SFU's own calls, simulcast
+//                      layers, and the bridge's single publication — those are covered by L4's unit tests only.
 //
 // Node's own WebSocket is a client only, so the server side of the protocol (RFC 6455) is written out here.
 
@@ -36,6 +45,8 @@ const iceServers = iceFile ? JSON.parse(readFileSync(iceFile, 'utf8')) : null
 const limitBytes = +opt('--limit-bytes', 0)
 const ttl = +opt('--ttl', 12 * 3600)
 const version = +opt('--version', 1)  // a Server that speaks another version answers the Mac's v:1 with 4426
+const v2 = args.includes('--v2')
+const MAX_VIEWERS = 16
 const log = (...a) => console.error(new Date().toISOString().slice(11, 23), ...a)
 const newKey = () => randomBytes(32).toString('base64url')
 
@@ -96,12 +107,16 @@ const portals = new Map()  // id → Portal
 class Portal {
   constructor(id, hostKey, guestKey, expiresAt = null) {
     Object.assign(this, { id, hostKey, guestKey, expiresAt, host: null, guest: null, guestAuth: null, ended: false, relayed: 0 })
+    // v2: the host connection's version, the version of the last host (for guests that come while none is here),
+    // and every guest by name.
+    Object.assign(this, { hostV: 1, lastV: 1, viewers: new Map(), seq: 0 })
     if (expiresAt) setTimeout(() => this.end(4404), Math.max(0, expiresAt - Date.now()))
   }
   log(...a) { log(`[${this.id}]`, ...a) }
   end(code) {
     this.ended = true
     if (this.guest) this.guest.close(code)
+    for (const v of this.viewers.values()) v.c.close(code)
     if (this.host) this.host.close(code)
   }
   // llll.gg's cost guard, when --limit-bytes is given.
@@ -127,18 +142,32 @@ class Portal {
         let m = null
         try { m = JSON.parse(data) } catch {}
         if (!text || !m || m.t !== 'host') { this.log('host: bad hello'); return c.close(4400) }
-        if (m.v !== version) return c.close(4426)
+        const speaksV2 = v2 && m.v === 2
+        if (m.v !== version && !speaksV2) return c.close(4426)
         if (m.key !== this.hostKey) { this.log('host: bad key'); return c.close(4401) }
         if (this.ended) return c.close(4404)
         hello = true
         clearTimeout(timer)
         if (this.host) { this.log('host: replaced by a newer one'); this.host.close(4409) }
         this.host = c
-        c.sendJSON(iceServers ? { t: 'pp.ready', iceServers } : { t: 'pp.ready' })
-        this.log('host: ready', iceServers ? `(${iceServers.length} ICE servers)` : '')
+        this.hostV = this.lastV = speaksV2 ? 2 : 1
+        const ready = speaksV2 ? { t: 'pp.ready', v: 2, sfu: true, p2p: true } : { t: 'pp.ready' }
+        c.sendJSON(iceServers ? { ...ready, iceServers } : ready)
+        this.log('host: ready', speaksV2 ? '(v2, fake SFU: peer to peer per viewer)' : '', iceServers ? `(${iceServers.length} ICE servers)` : '')
+        if (speaksV2) {
+          for (const [g, v] of this.viewers) { v.admitted = false; this.introduce(g, v) }
+          return
+        }
+        // v1 keeps one guest: the newest of those a v2 host left waiting.
+        const waiting = [...this.viewers.values()]
+        this.viewers.clear()
+        const newest = waiting.pop()
+        for (const v of waiting) { v.c.sendJSON({ type: 'bye', final: true, reason: 'This link was opened somewhere else.' }); v.c.close(4409) }
+        if (newest && !this.guest) { this.guest = newest.c; this.guestAuth = newest.auth; this.adoptV1(newest.c) }
         this.guestToHost()
         return
       }
+      if (this.hostV === 2 && c === this.host) return this.fromHostV2(c, data, text)
       if (text && data === 'ping') return c.send('pong', true)
       // The host's own words for the portal: pp.close closes the guest's socket here (after the bye that went first).
       if (text && /"t"\s*:\s*"pp\./.test(data)) {
@@ -155,6 +184,75 @@ class Portal {
       this.host = null
       this.log('host: gone', code)
       if (this.guest) this.guest.sendJSON({ t: 'pp.wait' })
+      for (const v of this.viewers.values()) { v.admitted = false; v.c.sendJSON({ t: 'pp.wait' }) }
+    }
+  }
+
+  // ---- v2 ----
+  introduce(g, v) {
+    this.host.sendJSON({ t: 'pp.guest', open: true, g })
+    this.host.sendJSON({ t: 'pp.from', g, f: JSON.parse(v.auth) })
+  }
+  fromHostV2(c, data, text) {
+    if (!text) return  // no picture through a v2 portal
+    let m = null
+    try { m = JSON.parse(data) } catch {}
+    if (!m || typeof m !== 'object') return
+    const v = typeof m.g === 'string' ? this.viewers.get(m.g) : null
+    const f = m.f && typeof m.f === 'object' ? JSON.stringify(m.f) : null
+    if (m.t === 'pp.to') { if (v && f && this.count(f.length)) v.c.send(f, true) }
+    else if (m.t === 'pp.all') { if (f) for (const each of this.viewers.values()) if (this.count(f.length)) each.c.send(f, true) }
+    else if (m.t === 'pp.close') { if (v) { this.viewers.delete(m.g); v.c.close(4403); c.sendJSON({ t: 'pp.guest', open: false, g: m.g }) } }
+    else if (m.t === 'pp.admit') { if (v) { v.admitted = true; this.log(`viewer ${m.g}: admitted by the host`) } }
+    else if (m.t === 'pp.sfu.publish') {
+      // The fake SFU: the bridge's offer for one viewer goes to that viewer as the SFU's offer would.
+      if (!m.g) return c.sendJSON({ t: 'pp.sfu.error', why: 'p2p_publishes_per_viewer' })
+      if (!v || !v.admitted || typeof m.sdp !== 'string') return c.sendJSON({ t: 'pp.sfu.error', g: m.g, why: 'no_such_viewer' })
+      v.c.sendJSON({ t: 'pp.sfu.offer', sdp: m.sdp, fresh: true, tracks: m.tracks || [], ...(iceServers ? { iceServers } : {}) })
+      this.log(`viewer ${m.g}: offer passed on (${(m.tracks || []).map(t => t.trackName).join(', ')})`)
+    }
+  }
+  onGuestV2(c, data) {
+    if (this.viewers.size >= MAX_VIEWERS) {
+      c.sendJSON({ type: 'bye', final: true, reason: `This Portal already has ${MAX_VIEWERS} viewers. Try again when someone leaves.` })
+      return c.close(4503)
+    }
+    const g = `v${++this.seq}-${randomBytes(3).toString('hex')}`
+    const v = { c, auth: data, admitted: false }
+    this.viewers.set(g, v)
+    this.log(`viewer ${g}: in (${this.viewers.size})`, this.host ? '' : '(no host yet: waiting)')
+    if (this.host) this.introduce(g, v); else c.sendJSON({ t: 'pp.wait' })
+    c.onmessage = (data, text) => {
+      if (this.viewers.get(g) !== v || !this.host || this.hostV !== 2 || !text) return
+      let m = null
+      try { m = JSON.parse(data) } catch {}
+      if (!m || typeof m !== 'object') return
+      if (typeof m.t === 'string' && m.t.startsWith('pp.')) {
+        if (m.t === 'pp.sfu.answer' && typeof m.sdp === 'string') this.host.sendJSON({ t: 'pp.sfu.answer', g, sdp: m.sdp })
+        else if (m.t === 'pp.sfu.layer') c.sendJSON({ t: 'pp.sfu.layer', rid: m.rid, ok: false })
+        return
+      }
+      if (this.count(data.length)) this.host.sendJSON({ t: 'pp.from', g, f: m })
+    }
+    c.onclose = () => {
+      if (this.viewers.get(g) !== v) return
+      this.viewers.delete(g)
+      this.log(`viewer ${g}: gone`)
+      if (this.host && this.hostV === 2) this.host.sendJSON({ t: 'pp.guest', open: false, g })
+    }
+  }
+  // A guest that came under a v2 host and is kept by a v1 one: its frames go verbatim from now on.
+  adoptV1(c) {
+    c.onmessage = (data, text) => {
+      if (c !== this.guest || !this.host) return
+      if (text && /"t"\s*:\s*"pp\./.test(data)) return
+      if (this.count(data.length)) this.host.send(data, text)
+    }
+    c.onclose = () => {
+      if (this.guest !== c) return
+      this.guest = null
+      this.guestAuth = null
+      if (this.host) this.host.sendJSON({ t: 'pp.guest', open: false })
     }
   }
 
@@ -167,6 +265,7 @@ class Portal {
         if (!text || !m || m.t !== 'auth' || m.token !== this.guestKey) { this.log('guest: bad auth'); return c.close(4401) }
         if (this.ended) return c.close(4404)
         authed = true
+        if ((this.host ? this.hostV : this.lastV) === 2) return this.onGuestV2(c, data)
         if (this.guest) {  // one guest at a time: the newer one wins
           this.guest.sendJSON({ type: 'bye', final: true, reason: 'This link was opened somewhere else.' })
           const old = this.guest

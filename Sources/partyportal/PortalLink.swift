@@ -10,6 +10,20 @@
 // (llll.gg: the portal's relay limit) are final; anything else is
 // retried with backoff (1 s, doubling, at most 30 s) and counts as the guest leaving.
 //
+// Relay protocol v2 (several viewers through the Server's Realtime SFU). The Mac offers it with "v":2; a Server
+// that has an SFU answers {"t":"pp.ready","v":2,"sfu":true,…}, any other answers as v1 — and an older one closes
+// with 4426, after which this link says v1 from then on. In v2:
+//   ← {"t":"pp.guest","open":…,"g":<id>}           guests have names; frames are wrapped:
+//   ← {"t":"pp.from","g":<id>,"f":{…}}             a guest's frame
+//   → {"t":"pp.to","g":<id>,"f":{…}}               a frame for one guest ({"t":"pp.all","f":{…}} for all)
+//   → {"t":"pp.close","g":<id>}                    close that guest (after its bye)
+//   → {"t":"pp.admit","g":<id>}                    Core checked that guest's key: give it the picture
+//   → {"t":"pp.sfu.publish","sdp":…,"tracks":[…]}  the bridge's offer for the picture (and sound), once
+//   ← {"t":"pp.sfu.answer","sdp":…}                the SFU's answer; {"t":"pp.sfu.error","why":…[,"g":…]} if not
+// No binary frame goes through a v2 portal: the picture travels only through the SFU.
+// tools/portal-relay.mjs --v2 fakes the SFU with "p2p":true in pp.ready: the bridge then publishes once per guest
+// ("g" in pp.sfu.publish and pp.sfu.answer) and the stand-in passes offer and answer between bridge and guest.
+//
 // Core sees a relayed guest exactly like a local one (`GuestSocket`): it checks the token in the first frame,
 // sends hello, state and media, and closes it. A close from Core cannot reach the guest's own socket (v1 has no
 // message for that); it only stops this Mac from talking to that guest until the Server reports a new one.
@@ -55,6 +69,25 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
     /// ICE servers the portal handed out in `pp.ready` (usually with its TURN relay), for as long as this host
     /// connection lasts. nil: the portal gave none, and Core uses its own (TurnRelay).
     private(set) var iceServers: [[String: Any]]?
+
+    /// The relay protocol of this connection, from `pp.ready`: 2 means several viewers through the portal's SFU.
+    private(set) var version = 1
+    /// v2 on a stand-in without an SFU (tools/portal-relay.mjs --v2): publish once per guest, peer to peer.
+    private(set) var p2p = false
+    /// Asked before each connection: offer v2? (Core says no when its bridge cannot make a video track.)
+    var wantsV2: () -> Bool = { true }
+    /// This portal closed a v2 hello with 4426: it speaks v1 only, so say v1 from now on.
+    private var v1Only = false
+    private var offeredV2 = false
+    /// The version the next hello says; read on URLSession's queue.
+    private let helloLock = NSLock()
+    private var helloVersion = 1
+    /// `pp.ready` arrived (main queue): Core sets up the picture for v2 then.
+    var onReady: (() -> Void)?
+    /// The portal's SFU messages (`pp.sfu.answer`, `pp.sfu.error`), main queue.
+    var onSfu: (([String: Any]) -> Void)?
+    /// v2: the guests the portal has introduced, by name.
+    private var viewers: [String: RelayedGuest] = [:]
 
     /// Only what a browser's RTCPeerConnection takes, and nothing a Server should not send: stun/turn/turns URLs,
     /// string credentials, a handful of entries. Port 53 is dropped as TurnRelay does (browsers block it).
@@ -158,6 +191,12 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         let t = session.webSocketTask(with: req)
         t.maximumMessageSize = 4 * 1024 * 1024
         task = t
+        offeredV2 = !v1Only && ProcessInfo.processInfo.environment["PP_PORTAL_V"] != "1" && wantsV2()
+        helloLock.lock()
+        helloVersion = offeredV2 ? 2 : 1
+        helloLock.unlock()
+        version = 1
+        p2p = false
         lastHeard = ProcessInfo.processInfo.systemUptime
         set(.connecting, error)
         t.resume()
@@ -181,7 +220,10 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
     // MARK: URLSessionWebSocketDelegate (delegate queue)
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        let hello: [String: Any] = ["t": "host", "key": key, "v": 1]
+        helloLock.lock()
+        let v = helloVersion
+        helloLock.unlock()
+        let hello: [String: Any] = ["t": "host", "key": key, "v": v]
         guard let d = try? JSONSerialization.data(withJSONObject: hello) else { return }
         webSocketTask.send(.string(String(decoding: d, as: UTF8.self))) { _ in }
     }
@@ -223,9 +265,21 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         case "pp.ready":
             backoff = 1
             iceServers = Self.cleanIceServers(m["iceServers"])
+            version = offeredV2 && (m["v"] as? Int) == 2 && (m["sfu"] as? Bool) == true ? 2 : 1
+            p2p = version == 2 && (m["p2p"] as? Bool) == true
             set(.ready, nil)
             let relay = iceServers?.contains { $0["credential"] != nil } == true
-            log("info", "Connected to the portal: \(page.absoluteString)" + (relay ? " (its TURN relay is offered to the guest)" : ""))
+            let how = version == 2 ? (p2p ? " — several viewers, peer to peer (a stand-in without an SFU)" : " — several viewers through its SFU") : ""
+            log("info", "Connected to the portal: \(page.absoluteString)\(how)" + (relay ? " (its TURN relay is offered to the guest)" : ""))
+            onReady?()
+        case "pp.guest" where version == 2:
+            guard let g = m["g"] as? String, !g.isEmpty, g.count <= 64 else { return }
+            viewers.removeValue(forKey: g)?.left()
+            if (m["open"] as? Bool) == true {
+                let guest = RelayedGuest(task: t, g: g)
+                viewers[g] = guest
+                onGuest?(guest)
+            }
         case "pp.guest":
             // One guest at a time: whatever was there before is gone either way.
             guestLeft()
@@ -234,6 +288,12 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
                 guest = g
                 onGuest?(g)
             }
+        case "pp.from" where version == 2:
+            guard let g = m["g"] as? String, let f = m["f"] as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: f) else { return }
+            viewers[g]?.received(String(decoding: data, as: UTF8.self))
+        case "pp.sfu.answer", "pp.sfu.error":
+            if version == 2 { onSfu?(m) }
         default:
             break
         }
@@ -243,6 +303,15 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         let g = guest
         guest = nil
         g?.left()
+        let all = viewers.values
+        viewers = [:]
+        for v in all { v.left() }
+    }
+
+    /// A message of our own to the portal (v2: `pp.admit`, `pp.sfu.publish`). Dropped while not connected.
+    func send(json: [String: Any]) {
+        guard let t = task, status == .ready, let data = try? JSONSerialization.data(withJSONObject: json) else { return }
+        t.send(.string(String(decoding: data, as: UTF8.self))) { _ in }
     }
 
     /// The host socket is gone. Final codes stop for good; anything else reconnects with backoff.
@@ -255,6 +324,13 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         // No WebSocket at all, and the Server says the portal is not there: it ended (or never was).
         var code = code
         if code == 0, let status = (t.response as? HTTPURLResponse)?.statusCode, [404, 410].contains(status) { code = 4404 }
+        // A Server from before v2 refuses the version we offered: not final, it takes v1 at once.
+        if code == 4426, offeredV2, !v1Only {
+            v1Only = true
+            log("info", "This portal speaks relay protocol v1 only: one guest at a time")
+            connect()
+            return
+        }
         if let final = Self.finalCodes[code] {
             log("warn", "\(final) — the portal link is off")
             stopped = true
@@ -287,8 +363,11 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
 /// A guest whose WebSocket ends at the portal. Sends go straight into the host socket and never block: there is
 /// no buffer signal in URLSessionWebSocketTask, so we count what is in flight and report it as `pendingBytes`.
 /// Core's sinks then drop video (and resume on a keyframe) and audio exactly as they do for a local socket.
+/// In v2 (`g` set) every frame is wrapped for that guest and nothing binary is sent: its picture comes from the SFU.
 final class RelayedGuest: GuestSocket {
     let remote = "through the portal"
+    /// v2: the portal's name for this guest.
+    let g: String?
     var onText: ((String) -> Void)?
     var onClose: (() -> Void)?
 
@@ -301,7 +380,10 @@ final class RelayedGuest: GuestSocket {
     /// More binary messages than this waiting for the relay counts as a full queue.
     private static let maxBinaryInFlight = 8
 
-    init(task: URLSessionWebSocketTask) { self.task = task }
+    init(task: URLSessionWebSocketTask, g: String? = nil) {
+        self.task = task
+        self.g = g
+    }
 
     var pendingBytes: Int {
         lock.lock()
@@ -310,8 +392,15 @@ final class RelayedGuest: GuestSocket {
         return binaryInFlight >= Self.maxBinaryInFlight ? max(bytes, 2_000_000) : bytes
     }
 
-    func send(text: String) { enqueue(.string(text), size: text.utf8.count, binary: false) }
+    func send(text: String) {
+        // Core's frames are JSON objects already: wrapping is a matter of text, not of parsing them again.
+        guard let g else { return enqueue(.string(text), size: text.utf8.count, binary: false) }
+        let wrapped = Self.wrap(text, for: g)
+        enqueue(.string(wrapped), size: wrapped.utf8.count, binary: false)
+    }
+
     func send(binary: Data) {
+        guard g == nil else { return }
         // A Worker's WebSocket takes messages up to 1 MiB, and llll.gg ends the portal for a bigger one (4429).
         // A frame that large is dropped here; the guest's decoder then asks for a keyframe.
         guard binary.count <= Self.maxMessage else { return }
@@ -319,6 +408,18 @@ final class RelayedGuest: GuestSocket {
     }
 
     static let maxMessage = 1024 * 1024 - 64
+
+    /// v2: one of Core's JSON frames, for one guest.
+    static func wrap(_ text: String, for g: String) -> String { "{\"t\":\"pp.to\",\"g\":" + quoted(g) + ",\"f\":" + text + "}" }
+
+    /// What asks the portal to close a guest: v1's one guest, or v2's guest `g`.
+    static func closeFrame(g: String?) -> String { g.map { "{\"t\":\"pp.close\",\"g\":" + quoted($0) + "}" } ?? #"{"t":"pp.close"}"# }
+
+    /// `s` as a JSON string, quotes included.
+    private static func quoted(_ s: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: [s])) ?? Data("[\"\"]".utf8)
+        return String(String(decoding: data, as: UTF8.self).dropFirst().dropLast())
+    }
 
     private func enqueue(_ message: URLSessionWebSocketTask.Message, size: Int, binary: Bool) {
         lock.lock()
@@ -343,7 +444,7 @@ final class RelayedGuest: GuestSocket {
     /// A guest the portal already replaced has left through `left()`, not here, so `pp.close` names the current one.
     func close(code: UInt16) {
         guard markClosed() else { return }
-        task.send(.string(#"{"t":"pp.close"}"#)) { _ in }
+        task.send(.string(Self.closeFrame(g: g))) { _ in }
         DispatchQueue.main.async { self.onClose?() }
     }
 

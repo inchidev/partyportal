@@ -246,6 +246,18 @@ final class StatusIcon: NSObject, NSMenuDelegate {
         if !fake, permissions["screen"] as? Bool == false { return (.attention, "Screen Recording permission is missing", link) }
         guard let sharing else { return (.idle, "Not sharing anything", link) }
         let title = ((sharing["window"] as? [String: Any])?["app"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "a window"
+        let viewers = state["viewers"] as? [[String: Any]] ?? []
+        if guest == nil, !viewers.isEmpty {
+            // Several viewers through a v2 portal: one of them may be in control.
+            let who = viewers.count == 1 ? "a viewer is" : "\(viewers.count) viewers are"
+            if let c = viewers.first(where: { ($0["control"] as? Bool) == true }) {
+                let name = c["name"] as? String ?? "a viewer"
+                if let paused = sharing["paused"] as? String, !paused.isEmpty { return (.attention, "Sharing \(title) — \(name) is paused", link) }
+                return (.control, "Sharing \(title) — \(name) is in control, \(who) watching", link)
+            }
+            if viewers.contains(where: { ($0["asked"] as? Bool) == true }) { return (.attention, "Sharing \(title) — a viewer asks for control", link) }
+            return (.watching, "Sharing \(title) — \(who) watching", link)
+        }
         guard let guest else { return (.waiting, "Sharing \(title) — waiting for a guest", link) }
         if (guest["control"] as? Bool) ?? false {
             if let paused = sharing["paused"] as? String, !paused.isEmpty { return (.attention, "Sharing \(title) — the guest is paused", link) }
@@ -272,7 +284,12 @@ final class StatusIcon: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         add(menu, "Open PartyPortal", #selector(open))
         if link != nil, state["sharing"] is [String: Any] { add(menu, "Copy the guest's link", #selector(copyLink)) }
+        let viewers = state["viewers"] as? [[String: Any]] ?? []
+        let inControl = ((state["guest"] as? [String: Any])?["control"] as? Bool) == true || viewers.contains { ($0["control"] as? Bool) == true }
+        // Works without the network or the panel: the guest's input stops here, on this Mac.
+        if inControl { add(menu, "Take control back", #selector(revoke)) }
         if state["guest"] is [String: Any] { add(menu, "Disconnect the guest", #selector(kick)) }
+        if !viewers.isEmpty { add(menu, viewers.count == 1 ? "Disconnect the viewer" : "Disconnect all \(viewers.count) viewers", #selector(kick)) }
         if state["sharing"] is [String: Any] { add(menu, "Stop sharing", #selector(stop)) }
         menu.addItem(.separator())
         add(menu, "Quit PartyPortal", #selector(quitApp))
@@ -286,6 +303,7 @@ final class StatusIcon: NSObject, NSMenuDelegate {
     @objc private func quitApp() { quit() }
     @objc private func stop() { core.hostAction("stop") }
     @objc private func kick() { core.hostAction("kick") }
+    @objc private func revoke() { core.hostAction("revoke") }
     @objc private func copyLink() {
         guard let link = Self.read(core.stateJSON()).link else { return }
         NSPasteboard.general.clearContents()

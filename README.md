@@ -96,6 +96,11 @@ prints one JSON line on stdout once the link is ready and keeps running until yo
 A portal can also be opened from a link, `partyportal://portal?url=<portal page>&key=<this Mac's key>&t=<guest's key>`;
 the app asks before it connects. `node tools/portal-relay.mjs --host-key K --guest-key T` is a local stand-in for one.
 
+A portal on an L4 Server that has Cloudflare Realtime set up takes **several viewers** (up to 16): this Mac sends
+the picture and sound once to the Server's Realtime SFU, and every viewer receives it from there. Viewers ask for
+control; the Share page lists them, and you give control to one at a time and take it back there or from the menu
+bar. Other portals keep one guest.
+
 Without a Server of your own, the Share page can make the link **through llll.gg** instead of a tunnel: llll.gg
 opens a portal for 12 hours (no account), serves the guest page and passes the connection on; the picture goes
 straight to the guest when their network allows. `--public` follows the same choice.
@@ -203,7 +208,9 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
 - Sound still travels in a data channel and is not synchronised with the track's jitter buffer.
 - While the Mac's screen is locked, windows do not draw and there is nothing to capture; the web view is also
   slowed down by macOS then.
-- One guest at a time. Spectators and passing control between guests are planned.
+- One guest at a time, except through a portal on an L4 Server with a Realtime SFU (several viewers, one in
+  control). That path has been exercised only against the local stand-in, which fakes the SFU peer to peer; its
+  first run against a real SFU is still to do.
 - Menus, pop-ups and dialogs of the shared app are separate macOS windows: the guest cannot see or click them.
 - Sound is the whole app's, not the single window's: share a browser window and the guest hears every tab.
 - Masks are stored as fractions of the window. If you resize it, check they still cover what they should.

@@ -17,6 +17,13 @@
 //          last piece; the codec config travels on the same channel as text, so it arrives before its keyframe
 //   audio  unreliable, unordered; one Opus packet per message, late sound is dropped rather than replayed
 //   ctl    reliable; the guest's input and our pongs
+//
+// Through a portal that speaks relay protocol v2 there is no connection to a guest at all: the page publishes the
+// same video track once to the portal's SFU, in three sizes (simulcast f/h/q), with the app's sound as an audio
+// track, and every viewer subscribes there. Core asks with {s:'sfu-publish', key, ice, simulcast}; the page answers
+// {b:'sfu-offer', key, sdp, tracks}, Core has the portal make the SFU calls and hands back {s:'sfu-answer', key,
+// sdp}; then {b:'sfu-up', key} or {b:'sfu-down', key, why}. `key` is '' for the SFU; a stand-in without one
+// (tools/portal-relay.mjs --v2) gets one publication per viewer, keyed by its name.
 (() => {
   const key = new URLSearchParams(location.search).get('k')
   const PIECE = 60000
@@ -70,7 +77,17 @@
   } catch (e) { trackWhy = String(e) }
 
   // The ceiling WebRTC may use; under it, it picks the rate the path can carry by itself.
-  async function capBitrate() {
+  async function capBitrate(force) {
+    for (const pub of pubs.values()) {
+      if (!pub.video || (pub.capped === kbps && !force)) continue
+      try {
+        const p = pub.video.getParameters()
+        if (!p.encodings || !p.encodings.length) continue
+        for (const e of p.encodings) { e.maxBitrate = Math.max(150, Math.round(kbps * (SHARE[e.rid] || 1))) * 1000; e.maxFramerate = 60 }
+        await pub.video.setParameters(p)
+        pub.capped = kbps
+      } catch {}
+    }
     if (!sender || sentKbps === kbps) return
     try {
       const p = sender.getParameters()
@@ -82,25 +99,157 @@
     } catch {}
   }
   async function trackInfo() {
-    if (!pc || !sender) return null
-    const stats = await pc.getStats()
-    let out = null, back = null, pair = null
+    const live = [...pubs.values()].find(p => p.up)
+    const peer = sender ? pc : live ? live.pc : null
+    if (!peer) return null
+    const stats = await peer.getStats()
+    let out = null, back = null, pair = null, layers = 0, bytes = 0, frames = 0
     stats.forEach(s => {
-      if (s.type === 'outbound-rtp' && s.kind === 'video') out = s
+      // With simulcast each layer has its own outbound-rtp: the numbers are the biggest layer's, the bitrate all of them.
+      if (s.type === 'outbound-rtp' && s.kind === 'video') {
+        layers++
+        bytes += s.bytesSent || 0
+        if (!out || (s.frameWidth || 0) > (out.frameWidth || 0)) out = s
+      }
       else if (s.type === 'remote-inbound-rtp' && s.kind === 'video') back = s
       else if (s.type === 'candidate-pair' && s.availableOutgoingBitrate) pair = s
     })
     if (!out) return null
+    frames = out.framesEncoded || 0
     const prev = lastOut
-    lastOut = { at: performance.now(), bytes: out.bytesSent, frames: out.framesEncoded }
+    lastOut = { at: performance.now(), bytes, frames }
     const dt = prev ? (lastOut.at - prev.at) / 1000 : 0
     return {
       fps: dt ? Math.round((lastOut.frames - prev.frames) / dt) : 0,
       kbps: dt ? Math.round((lastOut.bytes - prev.bytes) * 8 / 1000 / dt) : 0,
-      w: out.frameWidth, h: out.frameHeight, limit: out.qualityLimitationReason || '',
+      w: out.frameWidth, h: out.frameHeight, limit: out.qualityLimitationReason || '', layers,
       lost: back && back.fractionLost != null ? Math.round(back.fractionLost * 1000) / 10 : null,
       budget: pair ? Math.round(pair.availableOutgoingBitrate / 1000) : null,
     }
+  }
+
+  // ---- publications to the portal's SFU ----
+  const pubs = new Map()  // key → { pc, video, simulcast, audio, up }
+  const LAYERS = [{ rid: 'f', scaleResolutionDownBy: 1 }, { rid: 'h', scaleResolutionDownBy: 2 }, { rid: 'q', scaleResolutionDownBy: 4 }]
+  // Each layer's share of the bitrate the host set: full size gets it all, the smaller ones what their size needs.
+  const SHARE = { f: 1, h: 0.3, q: 0.1 }
+
+  // The app's sound as a track: Opus packets from PartyPortal → AudioDecoder → Web Audio → a MediaStream destination.
+  // WebRTC encodes it again with its own Opus. PartyPortal's Opus is 48 kHz stereo (OpusEncoder.sampleRate).
+  let sound = null, soundWhy = ''
+  function soundTrack() {
+    if (sound) return sound.track
+    try {
+      if (!('AudioDecoder' in window)) throw new Error('this WebKit has no AudioDecoder')
+      const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' })
+      const dest = ctx.createMediaStreamDestination()
+      const s = { ctx, dest, dec: null, nextAt: 0, track: dest.stream.getAudioTracks()[0], packets: 0, played: 0 }
+      s.dec = new AudioDecoder({ output: data => playSound(s, data), error: e => { soundWhy = 'decoder: ' + e; s.dec = null } })
+      s.dec.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 })
+      ctx.resume().catch(() => {})
+      sound = s
+      soundWhy = ''
+      return s.track
+    } catch (e) { soundWhy = String(e); return null }
+  }
+  function soundIn(buf) {
+    const s = sound
+    if (!s || !s.dec || s.dec.state !== 'configured' || s.dec.decodeQueueSize > 10) return
+    s.packets++
+    s.dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Number(new DataView(buf).getBigInt64(2)), data: new Uint8Array(buf, 10) }))
+  }
+  function playSound(s, data) {
+    const n = data.numberOfFrames, channels = Math.min(2, data.numberOfChannels), planes = []
+    for (let c = 0; c < channels; c++) { const p = new Float32Array(n); data.copyTo(p, { planeIndex: c, format: 'f32-planar' }); planes.push(p) }
+    const rate = data.sampleRate
+    data.close()
+    if (s.ctx.state !== 'running') { s.ctx.resume().catch(() => {}); return }
+    const now = s.ctx.currentTime
+    if (s.nextAt < now + 0.005) s.nextAt = now + 0.03  // ran dry: start again with a small cushion
+    if (s.nextAt > now + 0.2) return                 // too much queued: skip this one to stay close to live
+    const buffer = s.ctx.createBuffer(channels, n, rate)
+    planes.forEach((p, c) => buffer.copyToChannel(p, c))
+    const node = s.ctx.createBufferSource()
+    node.buffer = buffer
+    node.connect(s.dest)
+    node.start(s.nextAt)
+    s.nextAt += n / rate
+    s.played++
+  }
+
+  // All candidates in the SDP: the SFU (and the stand-in) take one offer and one answer, no trickling.
+  const gathered = (peer, ms) => new Promise(resolve => {
+    if (peer.iceGatheringState === 'complete') return resolve()
+    const done = () => { if (peer.iceGatheringState === 'complete') { peer.removeEventListener('icegatheringstatechange', done); resolve() } }
+    peer.addEventListener('icegatheringstatechange', done)
+    setTimeout(resolve, ms)
+  })
+
+  function sfuStop(key) {
+    for (const [k, pub] of [...pubs]) {
+      if (key !== undefined && k !== key) continue
+      pubs.delete(k)
+      pub.pc.onconnectionstatechange = null
+      try { pub.pc.close() } catch {}
+    }
+  }
+
+  async function sfuPublish(m) {
+    const key = m.key || ''
+    sfuStop(key)
+    if (!genTrack || genTrack.readyState !== 'live') { tell({ b: 'sfu-down', key, why: 'no video track to publish: ' + (trackWhy || 'it ended') }); return }
+    const peer = new RTCPeerConnection({ iceServers: m.ice || [], bundlePolicy: 'max-bundle' })
+    const pub = { pc: peer, video: null, simulcast: false, audio: false, up: false, why: '' }
+    pubs.set(key, pub)
+    try {
+      let tr = null
+      if (m.simulcast) {
+        try { tr = peer.addTransceiver(genTrack, { direction: 'sendonly', sendEncodings: LAYERS.map(l => ({ ...l })) }) }
+        catch (e) { pub.why = String(e) }
+      }
+      if (!tr) tr = peer.addTransceiver(genTrack, { direction: 'sendonly' })
+      pub.video = tr.sender
+      const track = soundTrack()
+      const atr = track ? peer.addTransceiver(track, { direction: 'sendonly' }) : null
+      peer.onconnectionstatechange = () => {
+        if (pubs.get(key) !== pub) return
+        if (peer.connectionState === 'connected' && !pub.up) { pub.up = true; capBitrate(true); tell({ b: 'sfu-up', key }) }
+        else if (['failed', 'closed'].includes(peer.connectionState)) { sfuStop(key); tell({ b: 'sfu-down', key, why: 'no path to the SFU (ICE ' + peer.iceConnectionState + ')' }) }
+      }
+      await peer.setLocalDescription(await peer.createOffer())
+      await gathered(peer, 3000)
+      if (pubs.get(key) !== pub) return
+      const sdp = peer.localDescription.sdp
+      pub.simulcast = /^a=simulcast:send /m.test(sdp)
+      if (m.simulcast && !pub.simulcast && !pub.why) pub.why = 'WebKit left simulcast out of its offer'
+      pub.audio = !!atr
+      const tracks = [{ mid: tr.mid, trackName: 'video', kind: 'video' }]
+      if (atr) tracks.push({ mid: atr.mid, trackName: 'audio', kind: 'audio' })
+      tell({ b: 'sfu-offer', key, sdp, tracks, simulcast: pub.simulcast, audio: pub.audio, why: pub.why, soundWhy })
+    } catch (e) {
+      if (pubs.get(key) === pub) { sfuStop(key); tell({ b: 'sfu-down', key, why: String(e) }) }
+    }
+  }
+
+  async function sfuAnswer(m) {
+    const pub = pubs.get(m.key || '')
+    if (!pub) return
+    try { await pub.pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }) }
+    catch (e) { sfuStop(m.key || ''); tell({ b: 'sfu-down', key: m.key || '', why: 'answer: ' + e }) }
+  }
+
+  // Whether this WebKit puts simulcast in an offer at all, checked once with a throwaway connection.
+  let simulcastProbe = null
+  async function probeSimulcast() {
+    if (simulcastProbe !== null || !genTrack) return
+    simulcastProbe = 'checking'
+    const peer = new RTCPeerConnection()
+    try {
+      peer.addTransceiver(genTrack, { direction: 'sendonly', sendEncodings: LAYERS.map(l => ({ ...l })) })
+      const offer = await peer.createOffer()
+      simulcastProbe = /^a=simulcast:send f;h;q/m.test(offer.sdp) ? 'yes' : 'no: ' + ((offer.sdp.match(/^a=simulcast:.*$/m) || ['no a=simulcast line'])[0])
+    } catch (e) { simulcastProbe = 'no: ' + e }
+    try { peer.close() } catch {}
   }
 
   function closePeer() {
@@ -209,12 +358,14 @@
       if (typeof e.data !== 'string') {
         const type = new Uint8Array(e.data, 0, 1)[0]
         try {
-          if (type === 2) { if (audio && audio.readyState === 'open' && audio.bufferedAmount < 16000) audio.send(e.data) }
-          else if (video && video.readyState === 'open') {
+          if (type === 2) {
+            if (audio && audio.readyState === 'open' && audio.bufferedAmount < 16000) audio.send(e.data)
+            if (pubs.size) soundIn(e.data)
+          } else if (sender || pubs.size || (video && video.readyState === 'open')) {
             const now = performance.now()
             if (lastIn) maxInGap = Math.max(maxInGap, now - lastIn)
             lastIn = now
-            if (sender) worker.postMessage(e.data, [e.data])
+            if (sender || pubs.size) worker.postMessage(e.data, [e.data])
             else {
               maxBuffered = Math.max(maxBuffered, video.bufferedAmount)
               sendVideo(e.data)
@@ -232,15 +383,21 @@
       else if (m.s === 'offer') onOffer(m)
       else if (m.s === 'cand') { try { if (pc) await pc.addIceCandidate(m.c) } catch {} }
       else if (m.s === 'reset') closePeer()
+      else if (m.s === 'sfu-publish') sfuPublish(m)
+      else if (m.s === 'sfu-answer') sfuAnswer(m)
+      else if (m.s === 'sfu-stop') sfuStop(m.key)
       else if (m.s === 'tick') {
         kbps = m.kbps || kbps
         capBitrate()
+        probeSimulcast()
         tell({ b: 'stats', inGap: Math.round(maxInGap), buffered: maxBuffered, path: await pathInfo().catch(() => null),
-               canTrack: !!genTrack, trackWhy, track: await trackInfo().catch(() => null) })
+               canTrack: !!genTrack, trackWhy, track: await trackInfo().catch(() => null), simulcastProbe,
+               sfu: [...pubs].map(([key, p]) => ({ key, state: p.pc.connectionState, simulcast: p.simulcast, audio: p.audio, why: p.why })),
+               sound: sound ? { state: sound.ctx.state, packets: sound.packets, played: sound.played } : soundWhy ? { why: soundWhy } : null })
         maxInGap = maxBuffered = 0
       }
     }
-    ws.onclose = () => { closePeer(); setTimeout(connect, 1000) }
+    ws.onclose = () => { closePeer(); sfuStop(); setTimeout(connect, 1000) }
   }
   connect()
 })()
