@@ -1,4 +1,5 @@
-// Ties everything together: one shared window, one guest, the host panel API.
+// Ties everything together: one shared window, one guest — or, through a portal that speaks relay protocol v2,
+// several viewers of whom one at a time may control — and the host panel API.
 // All state lives on the main queue; frames are handled on `videoQ`; the few values both touch sit behind `lock`.
 
 import AppKit
@@ -40,7 +41,13 @@ final class Core {
         var control = false
         /// What the guest's page says it shows, once a second.
         var fps = -1, late = 0, behind = 0, warned = false
+        /// A viewer of a v2 portal: the portal's name for it, its number in the journal and panel, and whether it
+        /// is waiting for the host to give it control.
+        var id: String?
+        var n = 0
+        var asked = false
         init(ws: GuestSocket) { self.ws = ws }
+        var name: String { id == nil ? "Guest" : "Viewer \(n)" }
     }
 
     let opts: Options
@@ -59,7 +66,18 @@ final class Core {
     private var source: FrameSource?
     private var input: InputController?
     private var realInput: RealInput?
+    /// The one guest of v1: a local page, or one relayed by a v1 portal.
     private var guest: Guest?
+    /// The viewers of a v2 portal, oldest first. Each has passed its own token check; their picture comes from the
+    /// portal's SFU, which the bridge publishes to once, and only `controller` may give input.
+    private var viewers: [Guest] = []
+    private var viewersSeen = 0
+    /// SFU publications of the bridge that are connected ("" for the portal's SFU; a viewer's name on a stand-in
+    /// that has none and gets one publication per viewer).
+    private var sfuLive: Set<String> = []
+    private var sfuInfo: [String: Any] = [:]
+    private var sfuRetry: DispatchWorkItem?
+    private var sfuBackoff = 2.0
     private var token: String
     private var log: [[String: Any]] = []
     private var windowFrame = CGRect.zero
@@ -140,6 +158,12 @@ final class Core {
     }
 
     private var uptime: Double { ProcessInfo.processInfo.systemUptime }
+
+    private var allGuests: [Guest] { (guest.map { [$0] } ?? []) + viewers }
+    /// Whoever may give input right now: the v1 guest or one viewer, never two.
+    private var controller: Guest? { allGuests.first { $0.control } }
+    /// Connected to a portal that speaks v2: several viewers through its SFU.
+    private var portalV2: Bool { portal?.status == .ready && portal?.version == 2 }
 
     private static func newToken() -> String {
         var bytes = [UInt8](repeating: 0, count: 16)
@@ -266,6 +290,9 @@ final class Core {
                 g.ws.close(code: 4002)
                 dropGuest(note: "Guest removed by the host")
             }
+            for v in viewers { kickViewer(v) }
+        case "revoke":
+            revokeControl(note: "You took control back")
         default:
             break
         }
@@ -551,7 +578,10 @@ final class Core {
         source?.stop()
         source = nil
         target = nil
-        guest?.control = false
+        for g in allGuests {
+            g.control = false
+            g.asked = false
+        }
         _ = nextGeneration()
         lock.lock()
         hideRects = []
@@ -723,7 +753,7 @@ final class Core {
         lastBlockText = text
         lastBlockNote = now
         addLog("block", text)
-        guest?.ws.send(json: ["type": "blocked", "what": what, "why": why])
+        (controller ?? guest)?.ws.send(json: ["type": "blocked", "what": what, "why": why])
     }
 
     // MARK: Monitor
@@ -763,7 +793,7 @@ final class Core {
         windowFrame = frame
         target?.frame = frame
         guardFrame(frame, t)
-        if !onScreen, settings.locks.frameGuard, guest?.control == true, uptime - lastGuestAction < 1.5, AX.trusted, let el = AX.window(pid: t.pid, id: t.id) {
+        if !onScreen, settings.locks.frameGuard, controller != nil, uptime - lastGuestAction < 1.5, AX.trusted, let el = AX.window(pid: t.pid, id: t.id) {
             AX.unminimize(el)
             blocked("window", "minimizing is not allowed — restored")
         }
@@ -786,7 +816,7 @@ final class Core {
             lockedFrame = frame
             return
         }
-        let guestDriven = guest?.control == true && (input?.buttonHeld == true || uptime - lastGuestAction < 1.0)
+        let guestDriven = controller != nil && (input?.buttonHeld == true || uptime - lastGuestAction < 1.0)
         guard settings.locks.frameGuard, guestDriven, AX.trusted, let el = AX.window(pid: t.pid, id: t.id) else {
             lockedFrame = frame  // the host moved it: that is the new place
             return
@@ -801,14 +831,25 @@ final class Core {
     // MARK: Guest
 
     private func sendState() {
-        guard let g = guest else { return }
-        g.ws.send(json: [
+        for g in allGuests { sendState(g) }
+    }
+
+    private func sendState(_ g: Guest) {
+        var state: [String: Any] = [
             "type": "state", "sharing": target != nil, "title": target?.app ?? "", "control": g.control,
             "viewOnly": settings.locks.viewOnly, "paused": orNull(pauseReason),
             "background": target != nil && backgroundActive, "mouse": !(target != nil && backgroundActive && pointerPollingEngine != nil),
             "audio": target != nil && opus != nil && settings.video.audio
                 ? ["codec": "opus", "sampleRate": Int(OpusEncoder.sampleRate), "channels": 2] as [String: Any] : NSNull() as Any,
-        ])
+        ]
+        if g.id != nil {
+            // A viewer asks for control and the host gives it; its sound comes as a track from the SFU, not as packets.
+            state["ask"] = true
+            state["asked"] = g.asked
+            state["viewers"] = viewers.count
+            state["audio"] = NSNull()
+        }
+        g.ws.send(json: state)
     }
 
     private func tokenMatches(_ candidate: String) -> Bool {
@@ -825,12 +866,14 @@ final class Core {
             self.guestMessage(ws, text)
         }
         ws.onClose = { [weak self, weak ws] in
-            guard let self, let ws, self.guest?.ws === ws else { return }
+            guard let self, let ws else { return }
+            if let v = self.viewers.first(where: { $0.ws === ws }) { return self.dropViewer(v, note: "\(v.name) left") }
+            guard self.guest?.ws === ws else { return }
             self.dropGuest(note: "Guest disconnected")
         }
         // No valid token within five seconds: hang up.
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak ws] in
-            guard let self, let ws, self.guest?.ws !== ws else { return }
+            guard let self, let ws, self.guest?.ws !== ws, !self.viewers.contains(where: { $0.ws === ws }) else { return }
             ws.close(code: 4001)
         }
     }
@@ -857,10 +900,18 @@ final class Core {
 
     private func guestMessage(_ ws: GuestSocket, _ text: String) {
         guard let m = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any], let type = m["t"] as? String else { return }
+        if let v = viewers.first(where: { $0.ws === ws }) { return viewerMessage(v, m, type) }
         guard let g = guest, g.ws === ws else {
             guard type == "auth", let candidate = m["token"] as? String, tokenMatches(candidate) else {
                 ws.send(json: ["type": "bye", "final": true, "reason": "This link does not work. Ask the host for a new one."])
                 return ws.close(code: 4003)
+            }
+            // A v2 portal's guest: one viewer among several, with its own state and its picture from the SFU.
+            if let relayed = ws as? RelayedGuest, relayed.g != nil { return viewerJoined(relayed) }
+            if portalV2 {
+                // The picture goes to the portal's SFU now; a page on this Mac's own port would have none.
+                ws.send(json: ["type": "bye", "final": true, "reason": "This share has several viewers through its portal: open the portal's link instead."])
+                return ws.close(code: 4005)
             }
             if let old = guest {  // the same link opened again: the newer page wins
                 old.ws.send(json: ["type": "bye", "final": true, "reason": "This link was opened somewhere else."])
@@ -916,6 +967,21 @@ final class Core {
     /// What an authenticated guest may ask for; arrives over the WebSocket or, when direct, through the bridge.
     private func guestCommand(_ g: Guest, _ m: [String: Any], _ type: String) {
         switch type {
+        case "control" where g.id != nil:
+            // A viewer asks, and waits for the host; giving it up needs nobody's leave.
+            if (m["ask"] as? Bool) == true || (m["on"] as? Bool) == true {
+                guard !g.control, !g.asked else { break }
+                g.asked = !settings.locks.viewOnly && target != nil
+                if g.asked { addLog("info", "\(g.name) asks for control — give it on the Share page") }
+            } else {
+                if g.control {
+                    g.control = false
+                    input?.releaseAll()
+                    addLog("info", "\(g.name) gave control back")
+                }
+                g.asked = false
+            }
+            sendState(g)
         case "control":
             let on = (m["on"] as? Bool) ?? false
             g.control = on && !settings.locks.viewOnly && target != nil
@@ -933,10 +999,175 @@ final class Core {
         }
     }
 
+    // MARK: Viewers (relay protocol v2)
+
+    private func viewerJoined(_ ws: RelayedGuest) {
+        guard let id = ws.g else { return }
+        let v = Guest(ws: ws)
+        v.id = id
+        viewersSeen += 1
+        v.n = viewersSeen
+        viewers.append(v)
+        if awake == nil {
+            awake = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleDisplaySleepDisabled], reason: "PartyPortal: a guest is connected")
+        }
+        addLog("info", "\(v.name) joined through the portal (\(viewers.count) watching)")
+        // No direct connection to offer: the picture comes from the portal's SFU once the portal is told to give it.
+        ws.send(json: ["type": "hello", "rtc": NSNull(), "sfu": true])
+        sendState(v)
+        portal?.send(json: ["t": "pp.admit", "g": id])
+        if portal?.p2p == true {
+            bridgeWS?.send(json: ["s": "sfu-publish", "key": id, "ice": iceServers, "simulcast": false, "kbps": settings.video.kbps])
+        }
+        updateSfuSink()
+        for other in viewers where other !== v { sendState(other) }
+    }
+
+    private func viewerMessage(_ v: Guest, _ m: [String: Any], _ type: String) {
+        switch type {
+        case "ping":
+            v.ws.send(json: ["type": "pong", "n": m["n"] ?? 0])
+        case "auth", "rtc-offer", "rtc-cand", "rtc-off":
+            break  // a viewer's picture comes from the SFU: there is no direct connection to set up
+        default:
+            guestCommand(v, m, type)
+        }
+    }
+
+    private func dropViewer(_ v: Guest, note: String) {
+        guard let i = viewers.firstIndex(where: { $0 === v }) else { return }
+        viewers.remove(at: i)
+        if v.control { input?.releaseAll() }
+        if let id = v.id, portal?.p2p == true {
+            bridgeWS?.send(json: ["s": "sfu-stop", "key": id])
+            sfuLive.remove(id)
+        }
+        if viewers.isEmpty, guest == nil, let awake {
+            ProcessInfo.processInfo.endActivity(awake)
+            self.awake = nil
+        }
+        addLog("info", note)
+        updateSfuSink()
+        for other in viewers { sendState(other) }
+    }
+
+    private func kickViewer(_ v: Guest) {
+        v.ws.send(json: ["type": "bye", "final": true, "reason": "The host closed access."])
+        v.ws.close(code: 4002)
+        dropViewer(v, note: "\(v.name) removed by the host")
+    }
+
+    /// The host gives control to one viewer; whoever had it loses it.
+    private func grantControl(_ v: Guest) -> String? {
+        guard !settings.locks.viewOnly else { return "View only is on: switch it off on the Control page first" }
+        guard target != nil else { return "Share a window first" }
+        for other in allGuests where other !== v && other.control {
+            other.control = false
+            input?.releaseAll()
+            sendState(other)
+        }
+        v.control = true
+        v.asked = false
+        if pauseReason == "unfocused", settings.locks.autoFocus { input?.backend.focus() }
+        addLog("info", "\(v.name) has control")
+        sendState(v)
+        return nil
+    }
+
+    /// Nobody controls any more: the host's own key, the menu bar, or the panel.
+    func revokeControl(note: String?) {
+        let had = allGuests.filter { $0.control || $0.asked }
+        guard !had.isEmpty else { return }
+        input?.releaseAll()
+        for g in had {
+            g.control = false
+            g.asked = false
+            sendState(g)
+        }
+        if let note { addLog("info", note) }
+    }
+
+    /// Video goes to the bridge, and from there to the SFU, while a publication is up and someone watches.
+    private func updateSfuSink() {
+        guard guest == nil else { return }  // a v1 guest owns the sink
+        let want = !sfuLive.isEmpty && !viewers.isEmpty && bridgeWS != nil
+        lock.lock()
+        let had = viewer != nil
+        viewer = want ? bridgeWS : nil
+        lock.unlock()
+        guard want != had else { return }
+        trackMode = want
+        liveKbps = 0
+        setLiveKbps(localKbps)
+        if want { kickVideo() }
+    }
+
+    /// The portal speaks v2: publish the picture to its SFU (on a stand-in without one, per viewer instead).
+    private func startSfu() {
+        sfuRetry?.cancel()
+        sfuRetry = nil
+        guard portalV2, let bridge = bridgeWS else { return }
+        if portal?.p2p == true {
+            for v in viewers { if let id = v.id { bridge.send(json: ["s": "sfu-publish", "key": id, "ice": iceServers, "simulcast": false, "kbps": settings.video.kbps]) } }
+            return
+        }
+        bridge.send(json: ["s": "sfu-publish", "key": "", "ice": iceServers, "simulcast": true, "kbps": settings.video.kbps])
+    }
+
+    private func retrySfu() {
+        guard portalV2, portal?.p2p != true, sfuRetry == nil else { return }
+        let wait = sfuBackoff
+        sfuBackoff = min(30, sfuBackoff * 2)
+        let item = DispatchWorkItem { [weak self] in
+            self?.sfuRetry = nil
+            self?.startSfu()
+        }
+        sfuRetry = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: item)
+    }
+
+    /// The portal connection that published is gone: so is the publication.
+    private func stopSfu() {
+        sfuRetry?.cancel()
+        sfuRetry = nil
+        sfuBackoff = 2
+        sfuInfo = [:]
+        if !sfuLive.isEmpty || bridgeWS != nil { bridgeWS?.send(json: ["s": "sfu-stop"]) }
+        sfuLive = []
+        updateSfuSink()
+    }
+
+    /// What the portal says about the SFU: its answer goes to the bridge, an error is logged and retried.
+    private func portalSfuMessage(_ m: [String: Any]) {
+        let key = (portal?.p2p == true ? m["g"] as? String : nil) ?? ""
+        switch m["t"] as? String {
+        case "pp.sfu.answer":
+            guard let sdp = m["sdp"] as? String else { return }
+            bridgeWS?.send(json: ["s": "sfu-answer", "key": key, "sdp": sdp])
+        case "pp.sfu.error":
+            let why = String((m["why"] as? String ?? "").prefix(120))
+            if let g = m["g"] as? String, let v = viewers.first(where: { $0.id == g }) {
+                addLog("warn", "The portal's SFU could not give \(v.name) the picture: \(why)")
+            } else {
+                addLog("warn", "The portal's SFU did not take the picture: \(why) — trying again")
+                bridgeWS?.send(json: ["s": "sfu-stop", "key": key])
+                sfuLive.remove(key)
+                updateSfuSink()
+                retrySfu()
+            }
+        default:
+            break
+        }
+    }
+
     // MARK: Direct connection
 
     private func bridgeOpened(_ ws: WebSocket) {
         bridgeWS = ws
+        // A reloaded bridge has lost its SFU publication: make it again.
+        sfuLive = []
+        updateSfuSink()
+        if portalV2 { DispatchQueue.main.async { [weak self] in self?.startSfu() } }
         // A guest who connected before the bridge was ready (or while it was reloading) gets the invitation now.
         if settings.video.direct { guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": iceServers]]) }
         ws.onText = { [weak self, weak ws] text in
@@ -947,6 +1178,8 @@ final class Core {
             guard let self, let ws, self.bridgeWS === ws else { return }
             self.bridgeWS = nil
             self.rtcDown(note: "Direct connection dropped — video goes via relay")
+            self.sfuLive = []
+            self.updateSfuSink()
         }
     }
 
@@ -974,13 +1207,42 @@ final class Core {
         case "closed":
             if let why = m["why"] as? String, !why.isEmpty { addLog("warn", "Direct connection could not be set up: \(why.prefix(200))") }
             rtcDown(note: "Direct connection dropped — video goes via relay")
+        case "sfu-offer":
+            // The bridge's offer for its publication: the portal makes the SFU calls and answers.
+            guard portalV2, let sdp = m["sdp"] as? String, let tracks = m["tracks"] as? [[String: Any]] else { return }
+            let key = m["key"] as? String ?? ""
+            var publish: [String: Any] = ["t": "pp.sfu.publish", "sdp": sdp, "tracks": tracks]
+            if !key.isEmpty { publish["g"] = key }
+            if key.isEmpty {
+                sfuInfo = ["simulcast": m["simulcast"] ?? false, "audio": m["audio"] ?? false, "why": m["why"] ?? ""]
+                var notes: [String] = []
+                if (m["simulcast"] as? Bool) != true { notes.append("one size only (simulcast refused: \(m["why"] as? String ?? "no reason"))") }
+                if (m["audio"] as? Bool) != true { notes.append("no sound (\(m["soundWhy"] as? String ?? "no audio track"))") }
+                if !notes.isEmpty { addLog("warn", "Publishing the picture with " + notes.joined(separator: " and ")) }
+            }
+            portal?.send(json: publish)
+        case "sfu-up":
+            let key = m["key"] as? String ?? ""
+            sfuLive.insert(key)
+            if key.isEmpty {
+                sfuBackoff = 2
+                addLog("info", "The picture is published to the portal's SFU" + ((sfuInfo["simulcast"] as? Bool) == true ? " in three sizes" : ""))
+            }
+            updateSfuSink()
+        case "sfu-down":
+            let key = m["key"] as? String ?? ""
+            guard sfuLive.remove(key) != nil || (m["why"] as? String) != nil else { return }
+            if let why = m["why"] as? String, !why.isEmpty { addLog("warn", "SFU connection: \(why.prefix(200))") }
+            updateSfuSink()
+            if key.isEmpty { retrySfu() }
         case "kf":
             requestKey()
         case "drop":
             squeeze()
         case "stats":
             bridgeDiag = ["inGap": m["inGap"] ?? 0, "buffered": m["buffered"] ?? 0, "canTrack": m["canTrack"] ?? false,
-                          "trackWhy": m["trackWhy"] ?? "", "track": m["track"] ?? NSNull()]
+                          "trackWhy": m["trackWhy"] ?? "", "track": m["track"] ?? NSNull(), "sfu": m["sfu"] ?? NSNull(),
+                          "sound": m["sound"] ?? NSNull(), "simulcastProbe": m["simulcastProbe"] ?? NSNull()]
             if let path = m["path"] as? [String: Any] {
                 // "host" is the guest's own address: the same network, or a public (often IPv6) address anywhere.
                 let names = ["host": "direct", "srflx": "direct, through NAT", "prflx": "direct, through NAT", "relay": "via TURN relay"]
@@ -1079,12 +1341,19 @@ final class Core {
             ]
         }
         if let g = guest { s["guest"] = ["since": g.since, "control": g.control, "addr": g.ws.remote, "direct": rtcUp, "path": rtcPath, "track": trackMode, "fps": g.fps, "late": g.late] }
+        s["viewers"] = viewers.map {
+            ["g": $0.id ?? "", "n": $0.n, "name": $0.name, "since": $0.since, "control": $0.control, "asked": $0.asked, "fps": $0.fps, "late": $0.late] as [String: Any]
+        }
+        s["sfu"] = portalV2
+            ? ["up": sfuLive.contains("") || (portal?.p2p == true && !sfuLive.isEmpty), "p2p": portal?.p2p == true, "simulcast": sfuInfo["simulcast"] ?? NSNull(),
+               "audio": sfuInfo["audio"] ?? NSNull(), "why": sfuInfo["why"] ?? NSNull()] as [String: Any]
+            : NSNull()
         s["liveKbps"] = liveKbps
         s["turn"] = turn.configured
         s["bridge"] = bridgeWS != nil
         s["bridgeDiag"] = bridgeDiag
         s["portal"] = portal.map {
-            ["page": $0.page.absoluteString, "status": $0.status.rawValue, "error": orNull($0.error), "rendezvous": portalFromRendezvous,
+            ["page": $0.page.absoluteString, "status": $0.status.rawValue, "error": orNull($0.error), "rendezvous": portalFromRendezvous, "version": $0.version,
              "expiresAt": portalExpires ?? NSNull(), "relay": $0.iceServers?.contains { $0["credential"] != nil } == true] as [String: Any]
         } ?? NSNull()
         s["share"] = ["via": settings.publicLinkMode, "rendezvous": URL(string: opts.rendezvous)?.host ?? opts.rendezvous,
@@ -1188,6 +1457,7 @@ final class Core {
         }
         tunnel.stop()
         portal?.stop()
+        stopSfu()
         portal = link
         portalFromRendezvous = false
         portalExpires = nil
@@ -1197,7 +1467,25 @@ final class Core {
         }
         link.log = { [weak self] kind, text in self?.addLog(kind, text) }
         link.onGuest = { [weak self] ws in self?.guestOpened(ws) }
-        link.onChange = { [weak self] in self?.printLinkIfReady() }
+        link.onChange = { [weak self] in
+            guard let self else { return }
+            self.printLinkIfReady()
+            if self.portal === link, link.status != .ready { self.stopSfu() }
+        }
+        // v2 needs a video track to publish; a bridge that cannot make one keeps to one guest (v1).
+        link.wantsV2 = { [weak self] in
+            guard let self else { return false }
+            return (self.bridgeDiag["canTrack"] as? Bool) != false || (self.bridgeDiag["trackWhy"] as? String ?? "starting") == "starting"
+        }
+        link.onReady = { [weak self] in
+            guard let self, self.portal === link else { return }
+            self.stopSfu()
+            self.startSfu()
+        }
+        link.onSfu = { [weak self] m in
+            guard let self, self.portal === link else { return }
+            self.portalSfuMessage(m)
+        }
         link.start()
         addLog("info", "Portal: \(link.page.absoluteString) — connecting")
         printLinkIfReady()
@@ -1208,6 +1496,7 @@ final class Core {
         guard let link = portal else { return }
         link.stop()
         portal = nil
+        stopSfu()
         portalFromRendezvous = false
         portalExpires = nil
         addLog("info", "Portal closed: the guest's link no longer reaches this Mac")
@@ -1288,7 +1577,23 @@ final class Core {
             applySettings(body)
             reply(.json(stateJSON()))
 
+        // Give control to one viewer ({g, on: true}), or take it back from everyone ({on: false}).
+        case ("POST", "/api/control"):
+            if (body["on"] as? Bool) == true {
+                guard let v = viewers.first(where: { $0.id == (body["g"] as? String) }) else { return reply(.fail(404, "That viewer has left")) }
+                if let error = grantControl(v) { return reply(.fail(409, error)) }
+            } else {
+                revokeControl(note: "You took control back")
+            }
+            reply(.json(stateJSON()))
+
         case ("POST", "/api/kick"):
+            // One viewer of a v2 portal ({g}); without it, everyone.
+            if let id = body["g"] as? String {
+                if let v = viewers.first(where: { $0.id == id }) { kickViewer(v) }
+                return reply(.json(stateJSON()))
+            }
+            for v in viewers { kickViewer(v) }
             if let g = guest {
                 g.ws.send(json: ["type": "bye", "final": true, "reason": "The host closed access."])
                 g.ws.close(code: 4002)
@@ -1390,7 +1695,10 @@ final class Core {
             locks.blockedShortcuts = Array(locks.blockedShortcuts.prefix(100))
             settings.locks = locks
             if locks.viewOnly {
-                guest?.control = false
+                for g in allGuests {
+                    g.control = false
+                    g.asked = false
+                }
                 input?.releaseAll()
             }
         }

@@ -1,6 +1,7 @@
 // The WebRTC peer on the host. macOS ships a full WebRTC stack inside WebKit, so instead of bundling one
 // we run web/bridge.html in a web view nobody looks at. It talks to Core over a local WebSocket and to the
-// guest's browser over a direct UDP connection (ICE + DTLS + SCTP data channels).
+// guest's browser over a direct UDP connection (ICE + DTLS + SCTP data channels), or — through a portal that
+// speaks relay protocol v2 — publishes the picture and sound once to the portal's SFU.
 
 import AppKit
 import WebKit
@@ -14,6 +15,8 @@ final class BridgeHost: NSObject, WKNavigationDelegate {
         self.url = url
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // The page turns the app's sound into an audio track for the SFU through Web Audio, with nobody to click.
+        config.mediaTypesRequiringUserActionForPlayback = []
         // WebKit hides this Mac's local addresses behind one-off .local names, which the guest's browser cannot
         // always resolve (phone hotspots, some routers) — and then two devices on the same network have no
         // direct path. The guest is someone the host invited; let them see the LAN address.

@@ -13,8 +13,8 @@ and every rule about what the guest may see or do is enforced on the host.
 ```
 Sources/partyportal/
   main.swift         flags, app delegate, --check, --mark-preview
-  Core.swift         all state: one window, one guest, host panel API, 0.1 s window monitor, bitrate adaptation,
-                     what the guest reports back
+  Core.swift         all state: one window, one guest (or a v2 portal's viewers and who controls), host panel API,
+                     0.1 s window monitor, bitrate adaptation, what the guest reports back
   Capture.swift      ScreenCaptureKit single-window capture; FakeSource (known picture + tone)
   Masker.swift       masked copy of a frame (no copy → no frame); host preview JPEG on its own queue
   Encoder.swift      VideoToolbox H.264, no B-frames, AVCC + avcC out
@@ -29,6 +29,7 @@ Sources/partyportal/
   HostApp.swift      the Mac app around the core: window with the panel (a web view on web/host.html), menu bar mark that changes colour, main menu
   Tunnel.swift       cloudflared quick tunnel with its own empty config; the binary is the installer's (Application Support), else Homebrew's
   PortalLink.swift   portal mode: an outbound WebSocket to a portal on an L4 Server; RelayedGuest, a guest behind it
+                     (in relay protocol v2, one of several viewers, its frames wrapped with its name)
   Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
 web/guest.html       guest page: media track → <video> over the canvas (or WebCodecs → canvas), Web Audio, mouse/keys/touch → host
@@ -37,7 +38,8 @@ web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC to the 
 site/                the landing page (static) and install.sh, the one-line installer it offers
 scripts/             build-app.sh builds and installs the app here; package.sh makes the archive install.sh downloads
 tools/smoke.mjs      protocol check without a browser (a port, or a portal page URL)
-tools/portal-relay.mjs  a local stand-in for a portal and for llll.gg's POST /api/portals (relay protocol v1), no dependencies
+tools/portal-relay.mjs  a local stand-in for a portal and for llll.gg's POST /api/portals (relay protocol v1; v2 with
+                     --v2, its SFU faked peer to peer), no dependencies
 Tests/               unit tests for InputPolicy and settings
 ```
 
@@ -66,6 +68,28 @@ finds its socket next to itself (`<path>/ws`) and shows `pp.wait` as "Waiting fo
 for the bridge's offer and the guest's `hello`, and `hello` goes out at once instead of waiting for TurnRelay
 (`PortalLink.cleanIceServers` keeps only stun/turn/turns URLs and string credentials). A frame over 1 MiB is not
 sent to a portal at all: Workers refuse it, and llll.gg ends the portal for it.
+
+**Several viewers: relay protocol v2.** `PortalLink` offers `"v":2` in its hello unless the bridge cannot make a
+video track (or `PP_PORTAL_V=1`). An L4 Server with a Realtime SFU app answers `{"t":"pp.ready","v":2,"sfu":true}`;
+any other answers as v1, and a Server from before v2 closes with 4426, after which the link says v1 to it from then
+on (not final). In v2 the portal names each guest (`g`) and wraps every frame: `pp.guest {open, g}`, `pp.from {g,
+f}` in, `pp.to {g, f}` / `pp.close {g}` out; `RelayedGuest(g:)` does the wrapping, so Core still sees one
+`GuestSocket` per guest. Each one is a *viewer* (`Core.viewers`): its own token check, `hello` with `rtc: null,
+sfu: true`, its own `state` (with `ask`, `asked`, `viewers`), and after the check Core sends `pp.admit {g}` — the
+Server subscribes a guest to the picture only then. The picture: on `pp.ready` v2 Core asks the bridge for one
+publication (`sfu-publish`); the bridge adds the VideoTrackGenerator track with simulcast `f/h/q`
+(scaleResolutionDownBy 1/2/4) and the app's sound as an audio track (Opus packets → AudioDecoder → Web Audio →
+MediaStreamDestination; `mediaTypesRequiringUserActionForPlayback` is empty for that), sends its offer with every
+candidate in it (`sfu-offer` → `pp.sfu.publish`), and applies the SFU's answer (`pp.sfu.answer` → `sfu-answer`). The
+video sink is the bridge while a publication is up and someone watches (`updateSfuSink`); `trackMode` is on then.
+No binary frame goes to a v2 portal, and a local guest on this Mac's port is refused while v2 is up (the sink is
+the bridge). Control: a viewer sends `{t:"control", ask:true}`; the Share page lists viewers (`/api/state`
+`viewers`, `sfu`) and the host gives control to one (`POST /api/control {g, on:true}`) or takes it back
+(`{on:false}`, also "Take control back" in the menu bar); `POST /api/kick {g}` removes one viewer. Input is
+accepted only from `controller`. The guest page plays the SFU's tracks in `<video id="tv">` (so `window.__pp.track`
+works, with `track.audio` from the audio receiver), answers `pp.sfu.offer` once with all candidates, and has
+`window.__pp.layer('f'|'h'|'q')` and `window.__pp.sfu`. A lost SFU connection reconnects the page's socket, which
+makes Core admit it again.
 
 **A link through llll.gg** (no Server of your own; ADR 0014 case 3). "Open public access" (`POST /api/tunnel`
 on, or `--public`) follows `settings.publicLink`: "tunnel" is cloudflared as before; "rendezvous" posts to
@@ -155,6 +179,17 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
   `--limit-bytes N` (4429 like llll.gg), `--version 2` (4426), and answers `POST /api/portals` like llll.gg, with
   portals at `/p/<id>`: `partyportal --fake --rendezvous http://127.0.0.1:8787`, pick "Link through 127.0.0.1" on
   the Share page (or `POST /api/settings {"share":{"via":"rendezvous"}}`) and open public access.
+- Several viewers without an L4 Server: `node tools/portal-relay.mjs --host-key hk --guest-key gk --v2` fakes the
+  SFU. Its `pp.ready` carries `"p2p":true`, so the bridge publishes once per admitted viewer (`g` in `pp.sfu.publish`
+  and `pp.sfu.answer`) and the stand-in passes each offer and answer between the bridge and that guest page: a real
+  WebRTC path per viewer, but no simulcast layers (`pp.sfu.layer` is refused) and none of the SFU's own calls —
+  those are tested only in L4 (`tests/unit/portal.test.ts`). `node tools/smoke.mjs http://127.0.0.1:8787/portal/test
+  gk 2` checks two viewers at once (each gets hello with `sfu`, its state and an SFU offer with a video section).
+  Then open the guest link in two tabs: one asks, the host gives it control, the other's input never reaches the
+  input log. `bridgeDiag.simulcastProbe` in `/api/state` says whether this WebKit puts `a=simulcast:send f;h;q`
+  in an offer.
+- Testing must be silent when someone may be asleep nearby: `--fake` plays a tone. Give the test copy a scratch
+  `--config` with `video.audio` false and mute every guest tab (`__pp.mute(true)`).
 - Transport knobs: `#relay=1` in a guest link forces the TURN relay, `#track=0` forces the data channel;
   `PP_ICE=local` drops STUN and TURN (same-network path only), `PP_FIXED_KBPS=1` stops bitrate adaptation,
   `PP_FAKE_FULL_FPS=1` lets the test picture run at the configured rate instead of 30.
@@ -213,6 +248,10 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - **A second copy must not half-start.** If the ports are taken, it asks the running copy to show its window (or
   hands it the portal) and exits. That is also why a `--portal` connects only half a second after start: a copy
   that dialled the portal first would push the running one out of it with a final 4409.
+- **A v2 subscription waits for the Mac.** The Server subscribes a viewer to the picture only after `pp.admit`, so
+  a guest the Mac refuses never receives a frame; keep it that way when changing who is admitted.
+- **The SFU wants one offer and one answer.** The bridge and the guest page wait for ICE gathering to finish and
+  send the whole SDP; there is no trickling of candidates through a v2 portal.
 - **A link must not move the host to someone else's portal unasked.** `partyportal://portal?…` always asks the
   host first (a sheet with the portal's address); only a local process or the panel may switch without asking.
 

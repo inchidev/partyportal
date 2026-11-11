@@ -130,6 +130,9 @@
 
   // Two ways to the host: the WebSocket (through the tunnel) and, once it is up, a direct WebRTC connection.
   let pc = null, dcCtl = null, direct = false, rtcTimer = 0, rtcPieces = [], rtcPath = ''
+  // Through a portal with several viewers (relay protocol v2) the picture and sound come from the portal's SFU
+  // instead: `sfu` while that connection is set up, `sfuLayer` the size asked for (f, h or q).
+  let sfuMode = false, sfu = false, sfuAudio = null, sfuLayer = 'h', sfuLost = 0
   // With a media track the picture plays in the <video> over the canvas; the canvas still takes every click.
   const tv = $('tv')
   let trackLive = false, trackPrev = null, track = { fps: 0, kbps: 0, freeze: 0, lost: 0, w: 0, h: 0, buffer: 0 }
@@ -138,7 +141,8 @@
     if (direct && dcCtl && dcCtl.readyState === 'open' && obj.t !== 'auth' && !obj.t.startsWith('rtc')) dcCtl.send(JSON.stringify(obj))
     else wsSend(obj)
   }
-  window.__pp = { get direct() { return direct }, get rtcPath() { return rtcPath }, get state() { return state }, get frames() { return frames }, get gotFrame() { return gotFrame }, get track() { return trackLive ? track : null }, send }
+  window.__pp = { get direct() { return direct }, get rtcPath() { return rtcPath }, get state() { return state }, get frames() { return frames }, get gotFrame() { return gotFrame }, get track() { return trackLive ? track : null }, send,
+                  get sfu() { return sfuMode ? { connected: sfu, layer: sfuLayer, audio: !!sfuAudio } : null }, layer: rid => wsSend({ t: 'pp.sfu.layer', rid }) }
 
   function veil(text, sub) {
     $('veil').hidden = !text
@@ -166,8 +170,9 @@
   function render() {
     const dot = $('dot'), st = $('status')
     $('take').hidden = !state.sharing || state.viewOnly
-    $('takeLabel').textContent = state.control ? 'Release control' : 'Take control'
-    $('take').className = 'act ' + (state.control ? 'on' : 'primary')
+    // With several viewers control is asked for and given by the host; with one guest it is simply taken.
+    $('takeLabel').textContent = state.control ? 'Release control' : state.ask ? (state.asked ? 'Asked — cancel' : 'Ask for control') : 'Take control'
+    $('take').className = 'act ' + (state.control || state.asked ? 'on' : 'primary')
     $('title').textContent = state.title || 'PartyPortal'
     $('lockMouse').hidden = !state.control
     canvas.classList.toggle('live', state.control)
@@ -181,7 +186,9 @@
     }
     veil(null)
     dot.className = 'ok'
-    st.textContent = state.viewOnly ? 'view only' : state.control ? 'you are in control' : 'watching — click “Take control”'
+    st.textContent = state.viewOnly ? 'view only' : state.control ? 'you are in control'
+      : state.ask ? (state.asked ? 'asked for control — waiting for the host' : 'watching' + (state.viewers > 1 ? ` with ${state.viewers - 1} more` : ''))
+      : 'watching — click “Take control”'
     if (state.control && state.mouse === false) st.textContent += ' · keyboard only in this app'
   }
 
@@ -236,6 +243,7 @@
   }
   // Browsers only let sound start from a click or a key press, so the context is made inside the first one.
   function unlockAudio() {
+    if (sfuAudio && sfuAudio.paused) sfuAudio.play().catch(() => {})
     if (actx) { if (actx.state === 'suspended') actx.resume(); return }
     const Ctx = window.AudioContext || window.webkitAudioContext
     if (!Ctx) return
@@ -276,11 +284,12 @@
   $('sound').onclick = () => {
     muted = !muted
     if (gain) gain.gain.value = muted ? 0 : 1
+    if (sfuAudio) { sfuAudio.muted = muted; sfuAudio.play().catch(() => {}) }
     $('sound').classList.toggle('off', muted)
     $('sound').dataset.tip = muted ? 'Sound is off' : 'Sound is on'
   }
   window.__pp.audio = audio
-  window.__pp.mute = on => { muted = on; if (gain) gain.gain.value = on ? 0 : 1 }
+  window.__pp.mute = on => { muted = on; if (gain) gain.gain.value = on ? 0 : 1; if (sfuAudio) sfuAudio.muted = on }
   window.__pp.audioState = () => (actx ? actx.state : 'none')
 
   // ---- direct connection ----
@@ -304,6 +313,8 @@
     rtcPath = ''
     if (trackLive) { waitKey = true; send({ t: 'kf' }) }  // the canvas decoder sat idle while the track played
     trackLive = false; trackPrev = null; tv.hidden = true; tv.srcObject = null
+    sfu = false; clearTimeout(sfuLost)
+    if (sfuAudio) { sfuAudio.pause(); sfuAudio.srcObject = null; sfuAudio = null; $('sound').hidden = !audioKey }
     if (old) { old.onconnectionstatechange = null; old.ontrack = null; try { old.close() } catch {} }
     if (tellHost) wsSend({ t: 'rtc-off', why: why || '' })
     render()
@@ -364,8 +375,58 @@
     // A relay on a slow mobile link was seen to need more than ten.
     rtcTimer = setTimeout(() => { if (pc === peer && !direct) stopRtc(true) }, 15000)
   }
+  // The portal's SFU offers the picture (and sound); we answer once with every candidate in it. A new
+  // subscription (`fresh`) gets a new connection; anything else renegotiates the one there is.
+  async function sfuOffer(m) {
+    if (!window.RTCPeerConnection) { veil('This browser cannot receive the picture', 'It has no WebRTC.'); return }
+    let peer = pc
+    if (m.fresh !== false || !peer || !sfu) {
+      stopRtc(false)
+      peer = pc = new RTCPeerConnection({ iceServers: m.iceServers || [], bundlePolicy: 'max-bundle', iceTransportPolicy: /[#&]relay=1/.test(location.hash) ? 'relay' : 'all' })
+      sfu = true
+      peer.ontrack = e => {
+        if (pc !== peer) return
+        try { e.receiver.jitterBufferTarget = 0 } catch {}
+        try { e.receiver.playoutDelayHint = 0 } catch {}
+        if (e.track.kind === 'video') { tv.srcObject = new MediaStream([e.track]); tv.play().catch(() => {}) }
+        else if (e.track.kind === 'audio') {
+          // Sound needs a click or a key on most browsers before it may play; unlockAudio retries on the first one.
+          sfuAudio = new Audio()
+          sfuAudio.srcObject = new MediaStream([e.track])
+          sfuAudio.muted = muted
+          sfuAudio.play().catch(() => {})
+          $('sound').hidden = false
+        }
+      }
+      peer.onconnectionstatechange = () => {
+        if (pc !== peer) return
+        clearTimeout(sfuLost)
+        if (peer.connectionState === 'connected') { rtt = null; render() }
+        // No picture without the SFU, and no other way to it: start this visit again (the host admits us anew).
+        else if (['failed', 'disconnected'].includes(peer.connectionState)) sfuLost = setTimeout(() => {
+          if (pc !== peer || peer.connectionState === 'connected') return
+          toast('Lost the connection to the picture — reconnecting')
+          stopRtc(false)
+          if (ws) ws.close()
+        }, peer.connectionState === 'failed' ? 0 : 4000)
+      }
+    }
+    try {
+      await peer.setRemoteDescription({ type: 'offer', sdp: m.sdp })
+      await peer.setLocalDescription(await peer.createAnswer())
+      await new Promise(resolve => {
+        if (peer.iceGatheringState === 'complete') return resolve()
+        peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') resolve() })
+        setTimeout(resolve, 3000)
+      })
+      if (pc === peer) wsSend({ t: 'pp.sfu.answer', sdp: peer.localDescription.sdp })
+    } catch (e) {
+      if (pc === peer) { toast('The picture could not be set up: ' + e); stopRtc(false) }
+    }
+  }
+
   async function rtcStats() {
-    if (!pc || !direct) return
+    if (!pc || !(direct || sfu)) return
     const stats = await pc.getStats()
     let pair = null
     stats.forEach(s => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId) })
@@ -373,8 +434,9 @@
     const local = stats.get(pair.localCandidateId) || {}, remote = stats.get(pair.remoteCandidateId) || {}
     rtcPath = `${(local.protocol || 'udp').toUpperCase()} ${local.candidateType}/${remote.candidateType}`
     if (pair.currentRoundTripTime != null && tv.srcObject) rtt = Math.round(pair.currentRoundTripTime * 1000)
-    let rx = null
-    stats.forEach(s => { if (s.type === 'inbound-rtp' && s.kind === 'video') rx = s })
+    let rx = null, ax = null
+    stats.forEach(s => { if (s.type === 'inbound-rtp' && s.kind === 'video') rx = s; else if (s.type === 'inbound-rtp' && s.kind === 'audio') ax = s })
+    if (ax) track.audio = { level: Math.round((ax.audioLevel || 0) * 1000) / 1000, energy: ax.totalAudioEnergy || 0, packets: ax.packetsReceived || 0 }
     if (!rx) return
     const now = { at: performance.now(), frames: rx.framesDecoded || 0, bytes: rx.bytesReceived || 0, freeze: rx.totalFreezesDuration || 0,
                   lost: rx.packetsLost || 0, got: rx.packetsReceived || 0, delay: rx.jitterBufferDelay || 0, out: rx.jitterBufferEmittedCount || 0 }
@@ -386,6 +448,7 @@
       fps: Math.round((now.frames - was.frames) / dt), kbps: Math.round((now.bytes - was.bytes) * 8 / 1000 / dt),
       freeze: Math.round((now.freeze - was.freeze) * 1000), lost: packets > 0 ? Math.round((now.lost - was.lost) * 1000 / packets) / 10 : 0,
       w: rx.frameWidth || 0, h: rx.frameHeight || 0, buffer: now.out > was.out ? Math.round((now.delay - was.delay) * 1000 / (now.out - was.out)) : 0,
+      ...(track.audio ? { audio: track.audio } : {}),
     }
   }
 
@@ -402,13 +465,17 @@
       const m = JSON.parse(e.data)
       // The portal itself: the host's Mac is not there (yet, or any more). Not final: hello follows when it comes.
       if (m.t === 'pp.wait') { hostAway = true; stopRtc(false); state = { sharing: false, control: false, viewOnly: false, paused: null, title: '' }; gotFrame = false; audioConfig(null); render(); return }
+      // Several viewers: the portal's SFU offers the picture, or says why it cannot.
+      if (m.t === 'pp.sfu.offer') { sfuOffer(m); return }
+      if (m.t === 'pp.sfu.error') { toast('The picture could not be set up (' + (m.why || 'error') + ')'); if (!gotFrame) veil('The picture could not be set up', 'Reload the page to try again.'); return }
+      if (m.t === 'pp.sfu.layer') { if (m.ok) sfuLayer = m.rid; return }
       if (m.type) hostAway = false
       if (m.type === 'video') configure(m)
       else if (m.type === 'state') { const was = state.sharing; state = m; if (!m.sharing) gotFrame = false; if (!was && m.sharing) gotFrame = false; audioConfig(m.audio); render() }
       else if (m.type === 'blocked') toast('🚫 ' + m.what + ' — ' + m.why)
       else if (m.type === 'pong' && m.n === pingN) rtt = Math.round(performance.now() - pingAt)
       else if (m.type === 'bye') { final = !!m.final; veil(m.reason || 'Disconnected') }
-      else if (m.type === 'hello') { stopRtc(false); startRtc(m.rtc); render() }
+      else if (m.type === 'hello') { sfuMode = !!m.sfu; if (!sfuMode || !sfu) stopRtc(false); if (!sfuMode) startRtc(m.rtc); render() }
       else if (m.type === 'rtc-answer') { if (pc) pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }).catch(() => stopRtc(true)) }
       else if (m.type === 'rtc-cand') { if (pc) pc.addIceCandidate(m.c).catch(() => {}) }
       else if (m.type === 'rtc-down') { stopRtc(false); waitKey = true }
@@ -437,6 +504,12 @@
     if (!moveTimer) moveTimer = setTimeout(flushMove, 8)
   }
   function setControl(on) {
+    // Several viewers: ask, and wait for the host to give it; its state message says when.
+    if (state.ask && !state.control) {
+      if (state.asked) { send({ t: 'control', on: false }); state.asked = false } else { send({ t: 'control', ask: true }); state.asked = true }
+      render()
+      return
+    }
     send({ t: 'control', on })
     // Assume the host agrees so the very next click is not lost; its state message corrects us if it does not.
     state.control = on && state.sharing && !state.viewOnly
@@ -457,7 +530,7 @@
   canvas.addEventListener('mousedown', e => {
     e.preventDefault()
     canvas.focus()
-    if (!state.control) { if (state.sharing && !state.viewOnly) setControl(true); return }
+    if (!state.control) { if (state.sharing && !state.viewOnly && !state.ask) setControl(true); return }
     flushMove()
     held.add(e.button)
     send({ t: 'd', b: e.button, ...(locked() ? {} : at(e)) })
@@ -488,7 +561,7 @@
   canvas.addEventListener('touchstart', e => {
     e.preventDefault()
     unlockAudio()
-    if (!state.control) { if (state.sharing && !state.viewOnly) setControl(true); return }
+    if (!state.control) { if (state.sharing && !state.viewOnly && !state.ask) setControl(true); return }
     if (e.touches.length === 1) {
       const p = touchAt(e.touches[0])
       send({ t: 'm', ...p })
@@ -537,18 +610,18 @@
     if (trackLive) late = track.freeze  // milliseconds of this second the picture stood still
     frames = 0; bytes = 0
     // The chip in the corner: bars and two numbers. The rest is in the card it opens.
-    const how = direct ? (/relay/.test(rtcPath) ? 'TURN relay (UDP)' : 'Direct (UDP)') : 'Tunnel (TCP)'
+    const how = sfu ? (/relay/.test(rtcPath) ? 'SFU through TURN (UDP)' : 'Through the SFU (UDP)') : direct ? (/relay/.test(rtcPath) ? 'TURN relay (UDP)' : 'Direct (UDP)') : 'Tunnel (TCP)'
     const frozen = gotFrame && state.sharing && fps === 0
     $('conn').hidden = !gotFrame
     const open = $('conn').classList.contains('open')
-    $('conn').className = (open ? 'open ' : '') + (!gotFrame ? '' : frozen || (trackLive && track.lost >= 8) ? 'bad' : !direct || late > 300 || (trackLive && track.lost >= 2) ? 'warn' : 'ok')
+    $('conn').className = (open ? 'open ' : '') + (!gotFrame ? '' : frozen || (trackLive && track.lost >= 8) ? 'bad' : !(direct || sfu) || late > 300 || (trackLive && track.lost >= 2) ? 'warn' : 'ok')
     $('stats').textContent = `${fps} fps` + (rtt != null ? ` · ${rtt} ms` : '')
     const rows = [['Path', how], ['Picture', `${canvas.width}×${canvas.height}`], ['Frames', `${fps} per second`], ['Bitrate', `${(kb / 1000).toFixed(1)} Mbps`]]
     if (rtt != null) rows.push(['Ping', `${rtt} ms`])
     if (trackLive) rows.push(['Packets lost', `${track.lost}%`])
     $('connRows').innerHTML = ''
     for (const [k, v] of rows) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; $('connRows').append(dt, dd) }
-    $('connNote').textContent = direct ? (/relay/.test(rtcPath) ? 'Through a relay server, still real-time UDP.' : 'Straight between the two computers.') : 'Through the tunnel: reliable, with more delay.'
+    $('connNote').textContent = sfu ? 'Through the portal’s media server, which sends the picture to every viewer.' : direct ? (/relay/.test(rtcPath) ? 'Through a relay server, still real-time UDP.' : 'Straight between the two computers.') : 'Through the tunnel: reliable, with more delay.'
     $('connNote').title = rtcPath
     rtcStats().catch(() => {})
     window.__pp.fps = fps

@@ -59,6 +59,7 @@
   label.check { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; cursor: pointer; }
   label.check input { margin-top: 3px; }
   .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 13px; font-weight: 600; background: var(--chip); }
+  #viewers { margin-top: 12px; display: grid; gap: 8px; }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
   .banner { background: color-mix(in srgb, var(--warn) 14%, var(--card)); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
   #windows { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
@@ -160,6 +161,8 @@
       </div>
       <div id="publicBox"></div>
       <p id="guestLine" class="dim" style="margin-top:12px">Nobody is connected.</p>
+      <!-- Several viewers through a portal that speaks v2: who watches, who asks for control, who has it. -->
+      <div id="viewers" hidden></div>
       <div class="row"><button id="kick" class="danger" hidden>Kick and replace link</button></div>
     </section>
 
@@ -293,9 +296,31 @@
       $('perms').innerHTML = [['screen', 'Screen Recording', 'to show the window'], ['accessibility', 'Accessibility', 'so the guest can use the mouse and keyboard']]
         .map(([k, name, why]) => `<p class="row"><span class="pill ${s.permissions[k] ? 'ok' : 'bad'}">${s.permissions[k] ? 'granted' : 'missing'}</span><b>${name}</b><span class="dim">— ${why}</span>${s.permissions[k] ? '' : `<button class="small" data-perm="${k}">Grant</button>`}</p>`).join('')
     })
-    once('guest', [s.guest, s.sharing && s.sharing.paused, s.settings.locks.viewOnly], () => {
-      const g = s.guest, head = $('headGuest')
-      $('kick').hidden = !g
+    once('viewers', [s.viewers, s.sfu, s.sharing && s.sharing.paused, s.settings.locks.viewOnly, !!s.sharing], () => {
+      const list = s.viewers || [], box = $('viewers')
+      box.hidden = !s.sfu
+      if (!s.sfu) return
+      const sfu = s.sfu
+      const how = sfu.p2p ? 'peer to peer through a stand-in without an SFU' : sfu.up ? `published to the portal's SFU${sfu.simulcast ? ' in three sizes' : ' in one size'}${sfu.audio ? ' with sound' : ', without sound'}` : 'not published yet'
+      const rows = list.map(v => {
+        const what = v.control ? '<span class="pill ok">in control</span>' : v.asked ? '<span class="pill warn">asks for control</span>' : '<span class="pill">watching</span>'
+        const give = v.control ? `<button class="small" data-revoke="1">Take control back</button>`
+          : `<button class="small${v.asked ? ' primary' : ''}" data-grant="${esc(v.g)}" ${!s.sharing || s.settings.locks.viewOnly ? 'disabled' : ''}>Give control</button>`
+        return `<div class="row"><b>${esc(v.name)}</b>${what}<span class="dim">${v.fps >= 0 ? v.fps + ' fps' : ''}${v.late > 250 ? ', ' + v.late + ' ms late' : ''}</span><span class="grow"></span>${give}<button class="small danger" data-kickv="${esc(v.g)}">Remove</button></div>`
+      }).join('')
+      box.innerHTML = `<p class="dim">Several viewers can watch through this portal; one at a time controls, when you give it. The picture is ${esc(how)}.</p>` + (rows || '<p class="dim">No viewers yet.</p>')
+    })
+    once('guest', [s.guest, s.viewers, s.sharing && s.sharing.paused, s.settings.locks.viewOnly], () => {
+      const g = s.guest, head = $('headGuest'), viewers = s.viewers || []
+      $('kick').hidden = !g && !viewers.length
+      if (!g && viewers.length) {
+        const c = viewers.find(v => v.control), asks = viewers.filter(v => v.asked).length
+        head.textContent = `${viewers.length} viewer${viewers.length > 1 ? 's' : ''}` + (c ? ` · ${c.name} in control` : asks ? ' · asks for control' : '')
+        head.className = 'pill ' + (c ? 'ok' : asks ? 'warn' : '')
+        $('guestLine').textContent = ''
+        $('kick').textContent = viewers.length > 1 ? 'Remove everyone' : 'Remove the viewer'
+        return
+      }
       if (!g) { head.textContent = 'no guest'; head.className = 'pill'; $('guestLine').textContent = 'Nobody is connected.'; return }
       const paused = s.sharing && s.sharing.paused
       const PAUSE = { unfocused: 'paused: window is not in front', hidden: 'paused: window is minimized', locked: 'paused: screen is locked', noaccess: 'Accessibility permission is missing' }
@@ -308,7 +333,7 @@
       $('localLink').value = s.link.local
       const box = $('publicBox'), t = s.tunnel, p = s.portal, sh = s.share, rv = sh.via === 'rendezvous'
       $('newToken').hidden = !!p
-      $('kick').textContent = p ? 'Kick' : 'Kick and replace link'
+      if (!(s.viewers || []).length) $('kick').textContent = p ? 'Kick' : 'Kick and replace link'
       // The choice of how to make a link, while there is none (a stopped portal from the rendezvous counts as none).
       $('viaBox').hidden = !!(p && !(p.rendezvous && p.status === 'stopped')) || !!s.link.public && !p || t.running || sh.busy
       $('viaHost').textContent = sh.rendezvous
@@ -482,6 +507,9 @@
     else if (t.id === 'tunnelOn') act('/api/tunnel', { on: true })
     else if (t.id === 'tunnelOff') act('/api/tunnel', { on: false })
     else if (t.id === 'portalOff') { if (confirm('The guest’s link will stop reaching this Mac. Close it?')) act('/api/portal', { off: true }) }
+    else if (t.dataset.grant) act('/api/control', { g: t.dataset.grant, on: true })
+    else if (t.dataset.revoke) act('/api/control', { on: false })
+    else if (t.dataset.kickv) act('/api/kick', { g: t.dataset.kickv })
   })
   document.querySelectorAll('[data-lock]').forEach(el => el.addEventListener('change', () => saveLocks({ [el.dataset.lock]: el.checked })))
   $('cmdMode').onchange = e => saveLocks({ cmdMode: e.target.value })
