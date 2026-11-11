@@ -124,6 +124,8 @@ final class InputController {
     var pauseReason: () -> String? = { nil }
     var onBlocked: (_ what: String, _ why: String) -> Void = { _, _ in }
     var onActivity: () -> Void = {}
+    /// Ask the owner to work out `pauseReason` again right now instead of on its next tick.
+    var refresh: () -> Void = {}
 
     private var mods: Set<String> = []
     private var keysDown: [String: UInt16] = [:]
@@ -189,7 +191,12 @@ final class InputController {
             guard let b = (m["b"] as? NSNumber)?.intValue, (0...2).contains(b) else { return }
             setPos(m)
             if let reason = pauseReason() {
-                if reason == "unfocused", locks().autoFocus { backend.focus() }
+                // The window is behind something: bring it forward, then deliver this click as a whole click
+                // once it is in front, so the guest does not have to click twice.
+                if reason == "unfocused", locks().autoFocus {
+                    backend.focus()
+                    clickWhenFocused(m, button: b, attempt: 0)
+                }
                 return
             }
             if let why = InputPolicy.zoneVerdict(point: pos, zones: zones()) { return onBlocked("click", why) }
@@ -227,6 +234,20 @@ final class InputController {
 
         default:
             break
+        }
+    }
+
+    private func clickWhenFocused(_ m: [String: Any], button b: Int, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, !self.buttonsDown.contains(b) else { return }
+            self.refresh()
+            if self.pauseReason() == nil {
+                self.handle(m)
+                // The guest's own release has usually arrived already and was ignored, so let go ourselves.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.handle(["t": "u", "b": b]) }
+            } else if attempt < 4 {
+                self.clickWhenFocused(m, button: b, attempt: attempt + 1)
+            }
         }
     }
 

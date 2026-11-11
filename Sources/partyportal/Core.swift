@@ -288,6 +288,10 @@ final class Core {
         ctl.pauseReason = { [unowned self] in self.pauseReason }
         ctl.onActivity = { [unowned self] in self.lastGuestAction = self.uptime }
         ctl.onBlocked = { [unowned self] what, why in self.blocked(what, why) }
+        ctl.refresh = { [unowned self] in
+            guard let t = self.target, let real = self.realInput, let (_, onScreen) = WindowQuery.frame(t.id) else { return }
+            self.setPause(real.pauseReason(onScreen: onScreen))
+        }
         input = ctl
 
         refreshZones()
@@ -578,12 +582,14 @@ final class Core {
             blocked("window", "minimizing is not allowed — restored")
         }
         if tickCount % 5 == 0 { refreshZones() }
-        let reason = realInput?.pauseReason(onScreen: onScreen)
-        if reason != pauseReason {
-            pauseReason = reason
-            if reason != nil { input?.releaseAll() }
-            sendState()
-        }
+        setPause(realInput?.pauseReason(onScreen: onScreen))
+    }
+
+    private func setPause(_ reason: String?) {
+        guard reason != pauseReason else { return }
+        pauseReason = reason
+        if reason != nil { input?.releaseAll() }
+        sendState()
     }
 
     /// Soft lock on the window's position and size: if it changed right after the guest acted, put it back.

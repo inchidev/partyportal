@@ -105,19 +105,21 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
   a codec config and a keyframe. CI runs both on every push.
 - By hand, with pixel checks on the guest's canvas: capture of a real window, masks, blocked clicks and shortcuts,
   resize, full screen and back, closing the window, view-only, kicking the guest, the public link.
+- Real input on the test window: clicks land where they were aimed, double and right clicks, keys with modifiers,
+  scrolling, a real button press. A click on a window that is behind others brings it forward and still counts.
+  Dragging the title bar moves the window and it is put back; the close button and ⌘W do nothing.
 - Sound: a 440 Hz tone from the test window arrives with the same frequency and level.
 - Direct connection on one Mac through the router: 8 Mbps, no frames lost, frames 13 ms late on average.
 
 ## Known gaps
 
-- **Real input injection has only been exercised in dry-run mode so far** (events written to a log instead of
-  posted). Try it on the test window first.
 - A direct connection between two different networks has not been measured yet.
 - One guest at a time. Spectators and passing control between guests are planned.
 - Menus, pop-ups and dialogs of the shared app are separate macOS windows: the guest cannot see or click them.
 - Sound is the whole app's, not the single window's: share a browser window and the guest hears every tab.
 - Masks are stored as fractions of the window. If you resize it, check they still cover what they should.
-- The mouse is shared: while the guest is in control, you cannot use that Mac for something else.
+- The mouse and the focus are shared: while the guest is in control, you cannot use that Mac for something else,
+  and anything that takes the focus away pauses the guest until their next click.
 - With strict NAT on both sides there is no direct path and the fallback is slower. A relay is planned.
 - WebRTC data channels can stall for about 0.2 s when a packet is lost.
 - macOS host only. A Windows host is planned.
