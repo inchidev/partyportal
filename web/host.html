@@ -220,7 +220,7 @@
       const what = !g.control ? 'watching' : paused ? PAUSE[paused] || 'paused' : 'in control'
       head.textContent = 'guest: ' + what
       head.className = 'pill ' + (g.control && !paused ? 'ok' : 'warn')
-      $('guestLine').textContent = `Connected since ${new Date(g.since * 1000).toLocaleTimeString(undefined)} (${g.addr}), now ${what}. ` + (g.direct ? `Video goes direct${g.path ? ' (' + g.path + ')' : ''}.` : 'Video goes via relay.')
+      $('guestLine').textContent = `Connected since ${new Date(g.since * 1000).toLocaleTimeString(undefined)} (${g.addr}), now ${what}. ` + (g.direct ? `Video goes direct${g.path ? ' (' + g.path + ')' : ''}.` : 'Video goes via relay.') + (g.fps >= 0 ? ` Their screen shows ${g.fps} fps${g.late > 250 ? ', frames arrive ' + g.late + ' ms late' : ''}.` : '')
     })
     once('link', [s.link, s.tunnel], () => {
       $('localLink').value = s.link.local

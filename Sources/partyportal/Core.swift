@@ -32,6 +32,8 @@ final class Core {
         let ws: WebSocket
         let since = Date().timeIntervalSince1970
         var control = false
+        /// What the guest's page says it shows, once a second.
+        var fps = -1, late = 0, behind = 0, warned = false
         init(ws: WebSocket) { self.ws = ws }
     }
 
@@ -823,6 +825,8 @@ final class Core {
             sendState()
         case "kf":
             requestKey()
+        case "stat":
+            guestStat(g, fps: (m["fps"] as? NSNumber)?.intValue ?? -1, late: (m["late"] as? NSNumber)?.intValue ?? 0, skipped: (m["skipped"] as? NSNumber)?.intValue ?? 0)
         case "auth", "ping", "rtc-offer", "rtc-cand", "rtc-off":
             break
         default:
@@ -896,6 +900,21 @@ final class Core {
         if guest != nil { kickVideo() }
     }
 
+    /// The guest's own count of what it shows. Behind the tunnel our socket never backs up — Cloudflare buffers
+    /// for us — so this is the only way to learn that frames arrive late or get thrown away over there.
+    private func guestStat(_ g: Guest, fps guestFps: Int, late: Int, skipped: Int) {
+        g.fps = max(-1, min(guestFps, 240))
+        g.late = max(0, min(late, 60_000))
+        let slow = skipped > 0 || late > 250
+        g.behind = slow ? g.behind + 1 : 0
+        if slow { squeeze() }
+        if g.behind >= 3, !g.warned {
+            g.warned = true
+            addLog("warn", "The guest sees \(g.fps) of \(fps) fps: their link or computer is not keeping up\(rtcUp ? "" : " (video goes via relay)")")
+        }
+        if g.behind == 0, g.fps * 10 >= fps * 8 { g.warned = false }
+    }
+
     /// The link is not keeping up: lower the bitrate now, creep back up later.
     private func squeeze() {
         guard uptime - lastSqueeze > 1 else { return }
@@ -946,7 +965,7 @@ final class Core {
                 "paused": orNull(pauseReason),
             ]
         }
-        if let g = guest { s["guest"] = ["since": g.since, "control": g.control, "addr": g.ws.remote, "direct": rtcUp, "path": rtcPath] }
+        if let g = guest { s["guest"] = ["since": g.since, "control": g.control, "addr": g.ws.remote, "direct": rtcUp, "path": rtcPath, "fps": g.fps, "late": g.late] }
         s["liveKbps"] = liveKbps
         s["bridge"] = bridgeWS != nil
         s["bridgeDiag"] = bridgeDiag

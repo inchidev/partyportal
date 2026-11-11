@@ -58,7 +58,7 @@
     noaccess: ['Control is off for now', 'The host has not yet allowed PartyPortal to control the mouse and keyboard.'],
   }
 
-  let ws, decoder, waitKey = true, gotFrame = false, final = false, retry = 0, bestGap = Infinity, late = 0
+  let ws, decoder, waitKey = true, gotFrame = false, final = false, retry = 0, bestGap = Infinity, late = 0, skipped = 0
   let state = { sharing: false, control: false, viewOnly: false, paused: null, title: '' }
   let frames = 0, bytes = 0, rtt = null, pingN = 0, pingAt = 0, toastTimer
 
@@ -137,8 +137,8 @@
     if (!decoder || decoder.state !== 'configured') return
     const view = new DataView(buf), key = (view.getUint8(1) & 1) === 1
     bytes += buf.byteLength
-    if (waitKey && !key) return
-    if (decoder.decodeQueueSize > 5) { waitKey = true; send({ t: 'kf' }); return }  // fell behind: jump to a fresh keyframe
+    if (waitKey && !key) { skipped++; return }
+    if (decoder.decodeQueueSize > 5) { waitKey = true; skipped++; send({ t: 'kf' }); return }  // fell behind: jump to a fresh keyframe
     waitKey = false
     // How much later than the best case this frame arrived: grows when frames queue up somewhere on the way.
     const ts = Number(view.getBigInt64(2)), gap = performance.now() - ts / 1000
@@ -413,7 +413,9 @@
     window.__pp.fps = fps
     window.__pp.kbps = kb
     window.__pp.late = Math.round(late)
-    late = 0
+    // Tell the host what really arrives: behind a relay it cannot see a slow link from its own side.
+    if (gotFrame && state.sharing) send({ t: 'stat', fps, late: Math.round(late), skipped })
+    late = 0; skipped = 0
   }, 1000)
   setInterval(() => { pingN++; pingAt = performance.now(); send({ t: 'ping', n: pingN }) }, 2000)
 
