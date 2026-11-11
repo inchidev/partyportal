@@ -60,7 +60,9 @@ final class Board: NSView {
         note(String(format: "right click %.3f %.3f", p.x / bounds.width, p.y / bounds.height))
     }
 
-    override func scrollWheel(with e: NSEvent) { note(String(format: "scroll %.0f %.0f", e.scrollingDeltaX, e.scrollingDeltaY)) }
+    override func scrollWheel(with e: NSEvent) {
+        note(String(format: "scroll %.0f %.0f", e.scrollingDeltaX, e.scrollingDeltaY))
+    }
 
     override func keyDown(with e: NSEvent) {
         var mods = ""
@@ -164,6 +166,25 @@ final class TestApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         soundButton.frame = NSRect(x: 640, y: 500, width: 200, height: 40)
         soundButton.autoresizingMask = [.maxXMargin, .minYMargin]
         board.addSubview(soundButton)
+
+        // Diagnostics (PP_TESTWIN_DUMP=1): every scroll event the app receives, with all its numeric fields,
+        // whether or not a view ends up handling it. Used to compare a real wheel event with a synthetic one.
+        if ProcessInfo.processInfo.environment["PP_TESTWIN_DUMP"] != nil {
+            NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { event in
+                var fields: [String] = []
+                if let cg = event.cgEvent {
+                    for f in UInt32(0)..<200 {
+                        let v = cg.getIntegerValueField(unsafeBitCast(f, to: CGEventField.self))
+                        if v != 0 { fields.append("\(f)=\(v)") }
+                    }
+                    fields.append(String(format: "loc=%.0f,%.0f flags=%llx", cg.location.x, cg.location.y, cg.flags.rawValue))
+                }
+                let inWindow = event.locationInWindow
+                let hit = event.window?.contentView?.superview?.hitTest(inWindow).map { String(describing: type(of: $0)) } ?? "nil"
+                logHandle?.write(Data(("DUMP scroll win=\(event.windowNumber) inWindow=\(Int(inWindow.x)),\(Int(inWindow.y)) hit=\(hit) window=\(event.window != nil) " + fields.joined(separator: " ") + "\n").utf8))
+                return event
+            }
+        }
 
         window.center()
         window.makeKeyAndOrderFront(nil)

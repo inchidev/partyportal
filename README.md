@@ -11,8 +11,8 @@ else, and can use it within the rules you set. Nothing to install on their side.
 - **Rules for input.** The guest cannot close, minimise, resize or move the window, cannot leave it
   (⌘Tab, Spotlight, Mission Control), and cannot click areas or press shortcuts you block.
   The rules run on your Mac, so a guest who rewrites the page still hits them.
-- **Background mode (experimental).** The guest works in the window while you keep using your Mac: your pointer
-  and the app you are in stay yours.
+- **In the background.** The guest works in the window while you keep using your Mac: your pointer and the app
+  you are in stay yours.
 - **Direct and free.** Video, the app's sound and input go peer-to-peer over UDP (WebRTC) when the networks allow.
 - **Made for agents too.** One command shares a window and prints the link, so a coding agent can hand you
   its simulator or app window to poke from your phone.
@@ -65,7 +65,7 @@ prints one JSON line on stdout once the link is ready and keeps running until yo
 | `--public` | open the public link right away |
 | `--print-link` | print the link as one JSON line on stdout (the journal goes to stderr) |
 | `--view-only` | the guest can watch but not touch |
-| `--background` | start in background mode (same as the switch in the host panel) |
+| `--takeover` | the guest uses your pointer instead of working in the background (works in every app) |
 | `--no-open` | do not open the host panel in a browser |
 | `--fake` | synthetic picture and logged input: needs no permissions, good for trying things out and for CI |
 | `--dry-input` | real window, but the guest's input is only written to a log |
@@ -75,30 +75,32 @@ The guest page handles touch: one finger is the mouse, two fingers scroll.
 
 A skill for Claude Code lives in [`integrations/claude-code`](integrations/claude-code).
 
-## Background mode
+## In the background, or with your pointer
 
-Normally the guest drives your pointer, so the shared window has to be in front and you cannot use the Mac
-meanwhile. Background mode (a switch in the host panel, experimental) removes both limits:
+There are two ways for the guest's input to reach the window, and a choice between them in the host panel.
+
+**In the background** is the default. You pick a window, send the link, and carry on with your own work:
 
 - **Input is addressed to the app that owns the window**, not sent through the system pointer. Your pointer does
-  not move and the app you are working in stays in front.
-- **The window moves to a virtual display** while it is shared, because a window that is fully covered stops
-  drawing. The display touches your screen only at a corner, so your pointer does not wander onto it. Stop sharing
-  and the window comes back. A window that is already in full screen stays on its own Space instead.
+  not move and the app you are working in stays in front. Clicks, drags, wheel scrolling and keys all go this way.
+- **The window moves to a virtual display** while it is shared, because some apps stop drawing when they are
+  fully covered. The display touches your screen only at a corner, so your pointer does not wander onto it. Stop
+  sharing and the window comes back. A window in full screen stays on its own Space instead.
 
 Nothing is loaded into the shared app, and nothing in it is patched or hooked: it only receives input events,
 the same kind it gets from a real mouse and keyboard.
 
-What that means in practice:
+One kind of app does not fit: an app that asks the system where the pointer is, instead of taking the pointer
+from the events it receives. There is one pointer per login session and it is yours, so such an app gets the
+guest's keyboard but not the guest's mouse. PartyPortal recognises the engines known to behave this way (Unity,
+so far), says so in the panel and tells the guest "keyboard only in this app".
 
-- Apps that take the mouse from the events they receive work: ordinary apps, pages in a browser, and the games
-  tried so far that are built that way.
-- Apps that ask the system where the pointer is (some game engines do) get the guest's keyboard but not the
-  guest's mouse: there is one pointer per login session and it is yours.
-- Wheel scrolling does not arrive yet.
+**With my pointer** is for those apps, and for a macOS on which the background route is not available: the guest
+drives your pointer. It works in every app, but the shared window has to stay in front and you cannot use the Mac
+meanwhile.
 
-Background mode relies on private macOS interfaces and may break with a system update. The technique is credited
-in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The background route relies on private macOS interfaces and may break with a system update. The technique is
+credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## How it works
 
@@ -137,10 +139,11 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
   scrolling, a real button press. A click on a window that is behind others brings it forward and still counts.
   Dragging the title bar moves the window and it is put back; the close button and ⌘W do nothing.
 - Sound: a 440 Hz tone from the test window arrives with the same frequency and level.
-- Background mode, with the host's own app in front and the host's pointer untouched throughout: clicks and keys
-  in Calculator (7×8 and 99+1), clicks, drags and keys on a page in Safari (60 fps once parked, 0 fps while
-  covered), a piece moved by dragging in Chess, a Unity game played by keyboard from a full-screen Space, and
-  a native MMO client driven by mouse and keyboard (interface clicks, camera and character turning, movement).
+- In the background, with the host's own app in front and the host's pointer untouched throughout: clicks and
+  keys in Calculator (7×8 and 99+1); clicks, drags, keys and wheel scrolling (a nested scroller too) on a page in
+  Safari, 60 fps once parked and 0 fps while covered; a piece moved by dragging in Chess; a Unity game played by
+  keyboard from a full-screen Space; a native MMO client driven by mouse, wheel and keyboard (interface clicks,
+  camera rotation and zoom, turning, movement).
 - Direct connection on one Mac through the router: 8 Mbps, no frames lost, frames 13 ms late on average.
 
 ## Known gaps
@@ -150,10 +153,10 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
 - Menus, pop-ups and dialogs of the shared app are separate macOS windows: the guest cannot see or click them.
 - Sound is the whole app's, not the single window's: share a browser window and the guest hears every tab.
 - Masks are stored as fractions of the window. If you resize it, check they still cover what they should.
-- Without background mode the mouse and the focus are shared: while the guest is in control you cannot use that
-  Mac for something else, and anything that takes the focus away pauses the guest until their next click.
-- In background mode: no wheel scrolling yet, and no guest mouse in apps that read the pointer position from the
-  system instead of from events.
+- In the background there is no guest mouse in apps that read the pointer position from the system instead of
+  from events; only Unity is recognised so far, other engines of that kind will simply ignore the guest's mouse.
+- With your pointer, the mouse and the focus are shared: you cannot use that Mac for something else, and anything
+  that takes the focus away pauses the guest until their next click.
 - With strict NAT on both sides there is no direct path and the fallback is slower. A relay is planned.
 - WebRTC data channels can stall for about 0.2 s when a packet is lost.
 - macOS host only. A Windows host is planned.

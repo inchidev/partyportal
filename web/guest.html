@@ -111,6 +111,7 @@
     veil(null)
     dot.className = 'ok'
     st.textContent = (state.title ? state.title + ' · ' : '') + (state.viewOnly ? 'view only' : state.control ? 'you are in control' : 'watching — click “Take control”')
+    if (state.control && state.mouse === false) st.textContent += ' · keyboard only in this app'
   }
 
   // ---- video ----

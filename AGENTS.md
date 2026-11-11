@@ -52,8 +52,11 @@ back to the WebSocket.
 `Core.guestCommand` → `InputController.handle` → policy → backend. `RealInput.pauseReason` decides whether input
 may flow at all (accessibility, lock screen, window in front).
 
-**Background mode.** `settings.background` picks the backend: `BackgroundInput` posts events to the app's pid
-through SkyLight with the window id stamped on them, so nothing is paused by focus and `pauseReason` stays nil.
+**Background or takeover.** `settings.background.mode` picks the backend. "background" is the default:
+`BackgroundInput` posts events to the app's pid through SkyLight with the window id stamped on them, so nothing
+is paused by focus and `pauseReason` stays nil. "takeover" is `RealInput`, the host's own pointer; it is also what
+you get when the SkyLight calls are missing. `AppCompat` names engines known to read the pointer from the system
+(the guest is then told "keyboard only").
 If `park` is on, `Core.park` creates a `VirtualDisplay`, moves it so it touches the main screen at a corner only,
 and moves the window there with Accessibility; `unpark` reverses it. Both can be switched while sharing
 (`switchBackground`). A full-screen window is left on its own Space.
@@ -96,6 +99,9 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
   inside a game was tried (it did give the guest a pointer of their own) and was removed on principle.
 - **A background window spends its first click on becoming key.** `BackgroundInput` sends a key-window record and
   a primer press just outside the window's corner first; without them the first click is lost.
+- **A wheel event's window-location stamp is window-local on every macOS**, unlike a click's (a screen point before
+  macOS 27). With a screen point the event reaches the app and then finds no view under it. It also wants the
+  window owner's connection in field 52 and must be posted once: posted twice it arrives as one event of double size.
 - **`CGEvent.postToPid` is not enough for the mouse.** Keys arrive, clicks do not; the SkyLight call does both.
 - **An init called through a C function pointer returns an owned object.** Declare it `Unmanaged` and take the
   retained value, or the object leaks; that is how a virtual display once outlived the share that made it.

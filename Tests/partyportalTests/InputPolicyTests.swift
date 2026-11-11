@@ -104,6 +104,17 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.masksByApp["com.example"]?.first?.name, "Secret")
     }
 
+    func testBackgroundIsTheDefaultAndOldOrOddValuesFallBackToIt() throws {
+        XCTAssertEqual(Settings().background.mode, "background")
+        let old = try JSONDecoder().decode(Settings.self, from: Data(#"{"background":{"enabled":false,"park":false}}"#.utf8))
+        XCTAssertEqual(old.background.mode, "background", "the old on/off flag is ignored")
+        XCTAssertFalse(old.background.park)
+        let odd = try JSONDecoder().decode(Settings.self, from: Data(#"{"background":{"mode":"sideways"}}"#.utf8))
+        XCTAssertEqual(odd.background.mode, "background")
+        let takeover = try JSONDecoder().decode(Settings.self, from: Data(#"{"background":{"mode":"takeover"}}"#.utf8))
+        XCTAssertEqual(takeover.background.mode, "takeover")
+    }
+
     func testEmptyObjectIsAllDefaults() throws {
         let s = try JSONDecoder().decode(Settings.self, from: Data("{}".utf8))
         XCTAssertEqual(s.locks, Locks())

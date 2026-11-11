@@ -41,10 +41,12 @@ struct VideoSettings: Codable, Equatable {
     var direct = true
 }
 
-/// Background mode: the guest works in the window while the host keeps using the Mac.
+/// How the guest's input reaches the shared window.
 struct BackgroundSettings: Codable, Equatable {
-    /// Address input to the app that owns the window instead of going through the host's pointer and focus.
-    var enabled = false
+    /// "background" (the default): input is addressed to the app that owns the window, so the host's pointer and
+    /// focus stay with the host. "takeover": the guest drives the host's pointer, which works in every app but
+    /// needs the window in front and the Mac to itself.
+    var mode = "background"
     /// While shared, keep the window on a software-only monitor so nothing covers it and it keeps drawing.
     var park = true
 }
@@ -89,7 +91,7 @@ extension BackgroundSettings {
     init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? enabled
+        if let m = try c.decodeIfPresent(String.self, forKey: .mode), ["background", "takeover"].contains(m) { mode = m }
         park = try c.decodeIfPresent(Bool.self, forKey: .park) ?? park
     }
 }

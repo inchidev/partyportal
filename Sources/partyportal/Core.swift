@@ -23,8 +23,8 @@ struct Options {
     var publicLink = false
     var viewOnly = false
     var printLink = false
-    /// Start in background mode (same as the switch in the host panel).
-    var background = false
+    /// Force the input mode for this run: "background" or "takeover" (same as the choice in the host panel).
+    var inputMode: String?
 }
 
 final class Core {
@@ -115,7 +115,7 @@ final class Core {
         webDir = Core.findWebDir(opts.webDir)
         audioOn = settings.video.audio
         liveKbps = settings.video.kbps
-        if opts.background { settings.background.enabled = true }
+        if let mode = opts.inputMode { settings.background.mode = mode }
     }
 
     private var uptime: Double { ProcessInfo.processInfo.systemUptime }
@@ -291,6 +291,8 @@ final class Core {
         }
         input = ctl
 
+        pointerPollingEngine = opts.fake ? nil : AppCompat.pointerPollingEngine(pid: info.pid)
+        warnAboutPointerPolling()
         refreshZones()
         publishMasks()
         printLinkIfReady()
@@ -352,24 +354,38 @@ final class Core {
         }
     }
 
-    /// Background mode applies to real windows with real input only.
-    private var backgroundActive: Bool { settings.background.enabled && !opts.fake && !opts.dryInput }
+    /// Background mode applies to real windows with real input, and needs the system calls that carry the mouse.
+    /// Without them the guest gets the host's pointer instead, which always works.
+    private var backgroundActive: Bool {
+        settings.background.mode != "takeover" && BackgroundInput.available && !opts.fake && !opts.dryInput
+    }
+
+    /// Set when the shared app is built on an engine known to read the pointer from the system, not from events:
+    /// in the background its mouse will not follow the guest.
+    private var pointerPollingEngine: String?
 
     private func makeBackend(for info: WindowInfo) -> InputBackend {
         if opts.fake || opts.dryInput {
             realInput = nil
             return DryInput(path: opts.inputLog ?? (NSTemporaryDirectory() as NSString).appendingPathComponent("partyportal-input.log"))
         }
-        if settings.background.enabled {
+        if backgroundActive {
             let background = BackgroundInput(pid: info.pid, windowID: info.id)
             background.frame = { [unowned self] in self.windowFrame }
             realInput = nil
-            if !BackgroundInput.available { addLog("warn", "Background mode: this macOS lacks the calls needed for the mouse; only the keyboard will reach the window") }
             return background
+        }
+        if settings.background.mode != "takeover" {
+            addLog("warn", "This macOS lacks what background mode needs: the guest will use your pointer instead")
         }
         let real = RealInput(pid: info.pid, windowID: info.id)
         realInput = real
         return real
+    }
+
+    private func warnAboutPointerPolling() {
+        guard backgroundActive, let engine = pointerPollingEngine else { return }
+        addLog("warn", "This app is built on \(engine), which reads the pointer from the system: in the background the guest's keyboard works in it, the mouse does not. Switch to “guest uses my pointer” to give them the mouse.")
     }
 
     /// The host switched background mode or parking while a window is shared.
@@ -382,7 +398,8 @@ final class Core {
         } else {
             unpark()
         }
-        addLog("info", settings.background.enabled ? "Background mode on: your pointer and front app are left alone" : "Background mode off: the guest uses your pointer")
+        addLog("info", backgroundActive ? "The guest works in the background: your pointer and front app are left alone" : "The guest uses your pointer: keep the shared window in front")
+        warnAboutPointerPolling()
         pauseReason = nil
         sendState()
     }
@@ -390,7 +407,10 @@ final class Core {
     /// Move the shared window onto a monitor that exists only in software: nothing can cover it there,
     /// so its app keeps drawing, and it is out of the host's way.
     private func park(_ info: WindowInfo) {
-        guard AX.trusted, let window = AX.window(pid: info.pid, id: info.id) else { return addLog("warn", "Virtual display needs the Accessibility permission") }
+        guard AX.trusted else { return addLog("warn", "Virtual display needs the Accessibility permission") }
+        // A window on another Space (a game in full screen, for one) is not among the ones Accessibility can move.
+        // It is not covered there either, so it is left where it is.
+        guard let window = AX.window(pid: info.pid, id: info.id) else { return }
         // A window in full screen already lives on a Space of its own: it is not covered there, and it cannot be moved.
         if AX.isFullScreen(window) { return addLog("info", "The window is in full screen on its own Space: left where it is") }
         let wide = (max(Int(info.frame.width), 640) + 1) & ~1, high = (max(Int(info.frame.height) + 60, 480) + 1) & ~1
@@ -705,6 +725,7 @@ final class Core {
         g.ws.send(json: [
             "type": "state", "sharing": target != nil, "title": target?.app ?? "", "control": g.control,
             "viewOnly": settings.locks.viewOnly, "paused": orNull(pauseReason),
+            "background": target != nil && backgroundActive, "mouse": !(target != nil && backgroundActive && pointerPollingEngine != nil),
             "audio": target != nil && opus != nil && settings.video.audio
                 ? ["codec": "opus", "sampleRate": Int(OpusEncoder.sampleRate), "channels": 2] as [String: Any] : NSNull() as Any,
         ])
@@ -909,7 +930,10 @@ final class Core {
             "dryInput": opts.fake || opts.dryInput,
             "permissions": ["screen": CGPreflightScreenCaptureAccess(), "accessibility": AX.trusted],
             "settings": ["locks": jsonObject(settings.locks), "video": jsonObject(settings.video), "background": jsonObject(settings.background)],
-            "background": ["available": BackgroundInput.available, "parked": virtualDisplay != nil, "active": backgroundActive],
+            "background": [
+                "available": BackgroundInput.available, "parked": virtualDisplay != nil, "active": backgroundActive,
+                "engine": orNull(target == nil ? nil : pointerPollingEngine),
+            ],
             "link": ["local": "http://127.0.0.1:\(opts.guestPort)/#t=\(token)", "public": orNull(tunnel.url.map { "\($0)/#t=\(token)" })],
             "tunnel": ["available": Tunnel.binary != nil, "running": tunnel.running, "url": orNull(tunnel.url), "error": orNull(tunnel.error)],
             "log": Array(log.suffix(80)),

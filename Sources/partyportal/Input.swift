@@ -248,18 +248,26 @@ final class BackgroundInput: InputBackend {
         guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return }
         e.location = last
         e.flags = []
+        // Unlike a click, a wheel event's stamp is taken as a point inside the window (origin top-left) on every
+        // macOS: with a screen point the app looks for a view outside the window and finds none.
         if let stamp = Self.setWindowLocation {
             let f = frame()
-            stamp(e, Self.windowLocationIsLocal ? CGPoint(x: last.x - f.minX, y: last.y - f.minY) : last)
+            stamp(e, CGPoint(x: last.x - f.minX, y: last.y - f.minY))
         }
         let wid = Int64(windowID)
         set(e, 51, wid)
         set(e, 91, wid)
         set(e, 92, wid)
         set(e, 40, Int64(pid))
-        // Known gap: none of the apps tried so far reacts to a wheel event addressed this way.
+        // A wheel event that came through the window server also carries its owner's connection in field 52.
+        if let connection = ownerConnection() { set(e, 52, Int64(connection)) }
         post(e)
-        e.postToPid(pid)
+    }
+
+    private func ownerConnection() -> UInt32? {
+        guard let main = Self.mainConnection, let owner = Self.getWindowOwner else { return nil }
+        var connection: UInt32 = 0
+        return owner(main(), windowID, &connection) == 0 && connection != 0 ? connection : nil
     }
 
     func key(_ code: UInt16, down: Bool, flags: CGEventFlags) {

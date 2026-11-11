@@ -9,7 +9,8 @@
 //                              for scripts and agents: share that window, open a public link and print it
 //                              to stdout as one JSON line {"type":"link","url":…,"local":…,"window":…}
 //   --view-only                the guest can watch but not touch
-//   --background               background mode: the guest works in the window, your pointer and focus stay yours
+//   --background / --takeover  how the guest's input arrives: addressed to the app (the default), or through
+//                              your pointer (works in every app, but the window must be in front)
 //   --admin-port N  --guest-port N  --token T  --config FILE  --input-log FILE  --web DIR  --no-open
 
 import AppKit
@@ -55,7 +56,8 @@ while !args.isEmpty {
     case "--public": opts.publicLink = true
     case "--view-only": opts.viewOnly = true
     case "--print-link": opts.printLink = true
-    case "--background": opts.background = true
+    case "--background": opts.inputMode = "background"
+    case "--takeover": opts.inputMode = "takeover"
     case "--admin-port": opts.adminPort = UInt16(value(flag)) ?? opts.adminPort
     case "--guest-port": opts.guestPort = UInt16(value(flag)) ?? opts.guestPort
     case "--token": opts.token = value(flag)
