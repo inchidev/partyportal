@@ -56,9 +56,9 @@ gets `pp.ready`, then `pp.guest` open/close around one guest whose frames pass v
 guest is a `RelayedGuest`, which Core takes like a local socket (`GuestSocket`): the token check, hello, state,
 media and input are unchanged, and the guest key is the token (the portal checks it as well). No tunnel runs and
 `/api/token` refuses: the portal owns the link. Closes 4401/4404/4409 are final; anything else reconnects (1 s,
-doubling, 30 s at most) and counts as the guest leaving. `ping`/`pong` every 20 s. A close from Core cannot reach the
-guest's socket at the portal (v1 has no message for it): Core's `bye` goes first, then this Mac stops talking to
-that guest. Sends never block: in-flight bytes are `pendingBytes`, and more than a few binary sends in flight
+doubling, 30 s at most) and counts as the guest leaving. `ping`/`pong` every 20 s. When Core closes a guest (bad token, kick), its `bye`
+goes first and `{"t":"pp.close"}` follows: the portal closes that guest's socket (4403) and answers `pp.guest`
+open:false. A guest's own `pp.` messages are dropped by the portal. Sends never block: in-flight bytes are `pendingBytes`, and more than a few binary sends in flight
 reads as a full queue, so the video sink drops and resumes on a keyframe as it does for a local socket. The page
 finds its socket next to itself (`<path>/ws`) and shows `pp.wait` as "Waiting for the host" until hello comes.
 

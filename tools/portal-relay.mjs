@@ -111,6 +111,13 @@ function onHost(c) {
       return
     }
     if (text && data === 'ping') return c.send('pong', true)
+    // The host's own words for the portal: pp.close closes the guest's socket here (after the bye that went first).
+    if (text && /"t"\s*:\s*"pp\./.test(data)) {
+      let m = null
+      try { m = JSON.parse(data) } catch {}
+      if (m?.t === 'pp.close' && guest) { const g = guest; guest = null; guestAuth = null; g.close(4403); host.sendJSON({ t: 'pp.guest', open: false }) }
+      return
+    }
     if (c === host && guest) guest.send(data, text)  // everything else goes to the guest, verbatim; dropped without one
   }
   c.onclose = code => {

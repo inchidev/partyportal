@@ -298,10 +298,12 @@ final class RelayedGuest: GuestSocket {
         }
     }
 
-    /// Core is done with this guest (bad token, kicked, replaced). The guest's socket at the portal stays open;
-    /// we just stop listening and talking to it.
+    /// Core is done with this guest (bad token, kicked). Whatever Core sent last (its `bye`) goes first, then
+    /// `pp.close` asks the portal to close the guest's socket there; L4 Servers since ADR 0014's first release do.
+    /// A guest the portal already replaced has left through `left()`, not here, so `pp.close` names the current one.
     func close(code: UInt16) {
         guard markClosed() else { return }
+        task.send(.string(#"{"t":"pp.close"}"#)) { _ in }
         DispatchQueue.main.async { self.onClose?() }
     }
 
