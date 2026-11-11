@@ -15,6 +15,20 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/partyportal" "$BIN/partyportal-testwin" "$APP/Contents/MacOS/"
 cp -R web "$APP/Contents/Resources/web"
 
+# cloudflared is not part of the app by default: the installer downloads the right one for each Mac, and a
+# build from source uses Homebrew's. PP_CLOUDFLARED=/path/to/cloudflared puts that copy inside the bundle.
+SIGN=("$APP/Contents/MacOS/partyportal-testwin")
+if [ -n "${PP_CLOUDFLARED:-}" ]; then
+  CF=$(realpath "$PP_CLOUDFLARED")
+  cp "$CF" "$APP/Contents/MacOS/cloudflared"
+  chmod 755 "$APP/Contents/MacOS/cloudflared"
+  SIGN+=("$APP/Contents/MacOS/cloudflared")
+  # Apache 2.0 asks for its licence to travel with the binary.
+  CF_LICENSE="$(dirname "$(dirname "$CF")")/LICENSE"
+  [ -f "$CF_LICENSE" ] && cp "$CF_LICENSE" "$APP/Contents/Resources/cloudflared-LICENSE"
+  echo "Bundled cloudflared: $("$CF" --version 2>/dev/null | head -1)"
+fi
+
 # App icon: every size macOS wants, from the one 1024 px source.
 ICON=site/assets/icon-1024.png
 if [ -f "$ICON" ]; then
@@ -47,10 +61,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 IDENTITY="${PP_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
-if [ -n "$IDENTITY" ] && codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/partyportal-testwin" "$APP" 2>/dev/null; then
+if [ -n "$IDENTITY" ] && codesign --force --sign "$IDENTITY" "${SIGN[@]}" "$APP" 2>/dev/null; then
   echo "Signed with: $IDENTITY"
 else
-  codesign --force --sign - "$APP/Contents/MacOS/partyportal-testwin" "$APP"
+  codesign --force --sign - "${SIGN[@]}" "$APP"
   echo "Signed ad hoc (no certificate): macOS will ask for the permissions again after every rebuild"
 fi
 

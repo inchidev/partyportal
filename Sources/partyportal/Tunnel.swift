@@ -4,9 +4,18 @@
 import Foundation
 
 final class Tunnel {
-    static let binary: String? = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"].first {
-        FileManager.default.isExecutableFile(atPath: $0)
-    }
+    /// Where the installer (site/install.sh) puts the cloudflared it downloads for this Mac.
+    static let installed = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("PartyPortal/cloudflared").path
+
+    /// A copy inside the app first (build-app.sh puts one there when asked), then the installer's, then Homebrew's.
+    static let binary: String? = {
+        let bundled = Bundle.main.executableURL?.resolvingSymlinksInPath()
+            .deletingLastPathComponent().appendingPathComponent("cloudflared").path
+        return ([bundled].compactMap { $0 } + [installed, "/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]).first {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+    }()
 
     private var process: Process?
     private(set) var url: String?

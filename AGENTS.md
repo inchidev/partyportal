@@ -27,13 +27,14 @@ Sources/partyportal/
   VirtualDisplay.swift  a software-only monitor (CGVirtualDisplay) the shared window is parked on in background mode
   Bridge.swift       the WebRTC peer: web/bridge.html in a 2×2 px WebKit window
   HostApp.swift      the Mac app around the core: window with the panel (a web view on web/host.html), menu bar mark that changes colour, main menu
-  Tunnel.swift       cloudflared quick tunnel with its own empty config
+  Tunnel.swift       cloudflared quick tunnel with its own empty config; the binary is the installer's (Application Support), else Homebrew's
   Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
 web/guest.html       guest page: media track → <video> over the canvas (or WebCodecs → canvas), Web Audio, mouse/keys/touch → host
 web/host.html        host panel: a sidebar and one page at a time; the same page in the app's window and in a browser
 web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC to the guest (video as a media track from a worker, the rest in data channels)
-site/                the landing page (static)
+site/                the landing page (static) and install.sh, the one-line installer it offers
+scripts/             build-app.sh builds and installs the app here; package.sh makes the archive install.sh downloads
 tools/smoke.mjs      protocol check without a browser
 Tests/               unit tests for InputPolicy and settings
 ```

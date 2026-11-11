@@ -24,14 +24,15 @@ Website: <https://partyportal.inchi.dev>
 
 ## Quick start
 
-Requires macOS 14 or later and Xcode (or the Swift toolchain). Tested on Apple Silicon.
+Requires macOS 14 or later on Apple Silicon.
 
 ```bash
-git clone https://github.com/inchidev/partyportal
-cd partyportal
-./scripts/build-app.sh
-open ~/Applications/PartyPortal.app
+curl -fsSL https://partyportal.inchi.dev/install.sh | bash
 ```
+
+That downloads the app from the latest release, checks it against the checksum published beside it, puts it in
+`~/Applications` and opens it; it also fetches `cloudflared` for the public link. Run it again to update. The app is not signed with an Apple Developer ID yet, so
+it comes through Terminal and macOS asks for the permissions again after each update.
 
 PartyPortal opens its window and puts its mark in the menu bar. Close the window and it keeps running there;
 the mark's colour says what is going on: plain — nothing shared, blue — a window is shared and nobody has come
@@ -49,7 +50,22 @@ The app is installed to `~/Applications` on purpose. Launched from `~/Documents`
 macOS asks for access to that folder the first time the video encoder starts and the picture freezes until you answer.
 
 The public link uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
-(`brew install cloudflared`). It carries the page and the connection handshake; the media goes direct.
+It carries the page and the connection handshake; the media goes direct. The installer downloads
+`cloudflared` from Cloudflare's own releases, built for your Mac, into `~/Library/Application Support/PartyPortal`.
+
+## Build from source
+
+Needs Xcode (or the Swift toolchain) and, for the public link, `brew install cloudflared`.
+
+```bash
+git clone https://github.com/inchidev/partyportal
+cd partyportal
+./scripts/build-app.sh
+open ~/Applications/PartyPortal.app
+```
+
+`scripts/package.sh` makes the archive the installer downloads (`dist/PartyPortal-<arch>.zip` and its checksum);
+both files go into a GitHub release.
 
 ## For agents and scripts
 
