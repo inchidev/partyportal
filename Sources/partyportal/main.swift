@@ -118,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data("Could not start: \(error.localizedDescription). PartyPortal may be running already.\n".utf8))
             exit(1)
         }
-        MainMenu.install(quit: #selector(quit), target: self)
+        MainMenu.install(quit: #selector(quit), target: self, reload: #selector(HostWindow.reload), window: window)
         icon = StatusIcon(core: core, openWindow: { [weak self] in self?.window.show() }, quit: { [weak self] in self?.quit() })
 
         for sig in [SIGINT, SIGTERM] {

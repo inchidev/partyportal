@@ -939,7 +939,8 @@ final class Core {
             bridgeDiag = ["inGap": m["inGap"] ?? 0, "buffered": m["buffered"] ?? 0, "canTrack": m["canTrack"] ?? false,
                           "trackWhy": m["trackWhy"] ?? "", "track": m["track"] ?? NSNull()]
             if let path = m["path"] as? [String: Any] {
-                let names = ["host": "same network", "srflx": "over the internet", "prflx": "over the internet", "relay": "via TURN relay"]
+                // "host" is the guest's own address: the same network, or a public (often IPv6) address anywhere.
+                let names = ["host": "direct", "srflx": "direct, through NAT", "prflx": "direct, through NAT", "relay": "via TURN relay"]
                 let kind = [path["local"], path["remote"]].compactMap { $0 as? String }.contains("relay") ? "relay" : (path["remote"] as? String) ?? ""
                 rtcPath = "\((path["protocol"] as? String ?? "udp").uppercased()), \(names[kind] ?? kind)"
             }

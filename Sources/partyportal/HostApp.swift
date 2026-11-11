@@ -18,6 +18,9 @@ final class HostWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
 
     var isVisible: Bool { window?.isVisible ?? false }
 
+    /// ⌘R: load the panel again (after an update of the page, or when it looks stuck).
+    @objc func reload() { webView?.reload() }
+
     func show() {
         if window == nil { build() }
         // With a window open this is an ordinary app (Dock icon, ⌘Tab, a menu); without one it lives in the menu bar.
@@ -287,7 +290,7 @@ final class StatusIcon: NSObject, NSMenuDelegate {
 
 enum MainMenu {
     /// Shown while the window is open. ⌘W closes the window (the app stays in the menu bar), ⌘Q quits for real.
-    static func install(quit: Selector, target: AnyObject) {
+    static func install(quit: Selector, target: AnyObject, reload: Selector, window: AnyObject) {
         let main = NSMenu()
         let app = NSMenu()
         app.addItem(withTitle: "About PartyPortal", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
@@ -306,6 +309,10 @@ enum MainMenu {
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
+
+        let view = NSMenu(title: "View")
+        view.addItem(withTitle: "Reload", action: reload, keyEquivalent: "r").target = window
+        main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
 
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")

@@ -9,13 +9,39 @@
   :root { color-scheme: dark; --bg: #313338; --card: #2b2d31; --head: #1e1f22; --line: #3f4147; --text: #f2f3f5; --dim: #b5bac1; --accent: #5865f2; --accent-hover: #4752c4; --ok: #23a55a; --warn: #f0b232; --bad: #f23f43; --bad-bg: #da373c; --chip: #383a40; --chip-hover: #4e5058; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
-  header { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 20px; background: var(--head); position: sticky; top: 0; z-index: 5; user-select: none; }
-  header h1 { font-size: 17px; margin: 0; font-weight: 700; }
-  header svg { width: 28px; height: 28px; flex: none; }
-  header .grow { flex: 1; }
-  main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
-  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
-  .col { display: grid; gap: 16px; min-width: 0; }
+  /* A sidebar and one page at a time, the way Discord lays out its settings. */
+  html, body { height: 100%; }
+  body { display: grid; grid-template-columns: 232px minmax(0, 1fr); overflow: hidden; }
+  #side { background: var(--card); display: flex; flex-direction: column; gap: 14px; padding: 16px 8px 12px; overflow: auto; user-select: none; }
+  #side .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px; font-size: 17px; }
+  #side .brand svg { width: 30px; height: 30px; flex: none; }
+  #side .links { display: grid; gap: 2px; }
+  #side a { display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--dim); font-weight: 600; cursor: pointer; }
+  #side a svg { width: 20px; height: 20px; flex: none; fill: currentColor; }
+  #side a:hover { background: #35373c; color: var(--text); }
+  #side a.active { background: #404249; color: #fff; }
+  #side .foot { margin-top: auto; display: grid; gap: 8px; padding: 0 2px; }
+  #side .foot .pill { justify-content: center; height: 32px; border-radius: 8px; }
+  button.quiet { background: none; color: var(--dim); font-weight: 500; }
+  button.quiet:hover { background: #35373c; color: var(--text); }
+  main { overflow: auto; padding: 24px 28px 56px; display: grid; gap: 16px; align-content: start; }
+  .page { display: grid; gap: 16px; max-width: 880px; min-width: 0; }
+  .page > h1 { font-size: 22px; font-weight: 700; margin: 0; }
+  main > .banner { max-width: 880px; }
+  main a { color: #00a8fc; cursor: pointer; }
+  main a:hover { text-decoration: underline; }
+  .grow { flex: 1; }
+  #previewMini { display: block; max-width: 100%; max-height: 300px; border-radius: 8px; background: #000; }
+  #previewMini:not([src]) { display: none; }
+  @media (max-width: 720px) {
+    body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    #side { flex-direction: row; align-items: center; gap: 8px; padding: 8px 10px; overflow-x: auto; }
+    #side .brand b, #side .foot .quiet, #side a span { display: none; }
+    #side .links { display: flex; }
+    #side a { width: 40px; height: 32px; justify-content: center; padding: 0; }
+    #side .foot { margin: 0 0 0 auto; display: flex; }
+    main { padding: 16px 14px 40px; }
+  }
   section { background: var(--card); border-radius: 8px; padding: 16px; min-width: 0; }
   h2 { font-size: 12px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .02em; color: var(--dim); font-weight: 700; }
   p { margin: 6px 0; }
@@ -34,7 +60,7 @@
   label.check input { margin-top: 3px; }
   .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 13px; font-weight: 600; background: var(--chip); }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
-  .banner { grid-column: 1 / -1; background: color-mix(in srgb, var(--warn) 14%, var(--card)); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+  .banner { background: color-mix(in srgb, var(--warn) 14%, var(--card)); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
   #windows { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
   .win { border-radius: 8px; padding: 8px; cursor: pointer; background: var(--bg); text-align: left; display: block; width: 100%; height: auto; font-weight: 400; outline: 2px solid transparent; }
   .win:hover { background: var(--chip); outline-color: var(--accent); }
@@ -60,28 +86,40 @@
   .chip button { background: none; height: auto; padding: 0 5px; color: var(--dim); }
   .link { display: flex; gap: 6px; margin: 6px 0; }
   .link input { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
-  #log { max-height: 260px; overflow: auto; font-size: 13px; }
-  #log div { padding: 3px 0; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+  #log { font-size: 14px; }
+  #log div { padding: 6px 0; border-top: 1px solid var(--line); display: flex; gap: 12px; }
+  #log div:first-child { border-top: 0; }
   #log time { color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
   #log .block { color: var(--bad); } #log .warn { color: var(--warn); }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<header>
-  <svg viewBox="0 0 64 64" aria-hidden="true">
-    <clipPath id="pp-clip"><path d="M0 0H64V47H57A25 9.5 0 0 1 7 47H0Z"/></clipPath>
-    <ellipse cx="32" cy="47" rx="25" ry="9.5" fill="#111214"/>
-    <path d="M7 47a25 9.5 0 0 1 50 0" fill="none" stroke="#5865f2" stroke-width="6" stroke-linecap="round"/>
-    <g clip-path="url(#pp-clip)"><g transform="rotate(-11 32 47)"><path d="M32 9 52.9 60H11.1Z" fill="#ffcf24"/><path d="M26.7 22h10.6l2.1 5H24.6Z" fill="#111214"/><path d="M21.7 34h20.6l2 5H19.7Z" fill="#111214"/></g></g>
-    <circle cx="27.3" cy="9.7" r="5.5" fill="#5865f2"/>
-    <path d="M7 47a25 9.5 0 0 0 50 0" fill="none" stroke="#5865f2" stroke-width="6" stroke-linecap="round"/>
-  </svg>
-  <h1>PartyPortal</h1>
-  <span class="grow"></span>
-  <span id="headGuest" class="pill">no guest</span>
-  <button id="stopAll" class="danger" hidden>Stop sharing</button>
-</header>
+<nav id="side">
+  <div class="brand">
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <clipPath id="pp-clip"><path d="M0 0H64V47H57A25 9.5 0 0 1 7 47H0Z"/></clipPath>
+      <ellipse cx="32" cy="47" rx="25" ry="9.5" fill="#111214"/>
+      <path d="M7 47a25 9.5 0 0 1 50 0" fill="none" stroke="#5865f2" stroke-width="6" stroke-linecap="round"/>
+      <g clip-path="url(#pp-clip)"><g transform="rotate(-11 32 47)"><path d="M32 9 52.9 60H11.1Z" fill="#ffcf24"/><path d="M26.7 22h10.6l2.1 5H24.6Z" fill="#111214"/><path d="M21.7 34h20.6l2 5H19.7Z" fill="#111214"/></g></g>
+      <circle cx="27.3" cy="9.7" r="5.5" fill="#5865f2"/>
+      <path d="M7 47a25 9.5 0 0 0 50 0" fill="none" stroke="#5865f2" stroke-width="6" stroke-linecap="round"/>
+    </svg>
+    <b>PartyPortal</b>
+  </div>
+  <div class="links">
+    <a data-go="share"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-6v2h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2H5a2 2 0 0 1-2-2Zm2 0v10h14V5Z"/></svg><span>Share</span></a>
+    <a data-go="masks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4a1 1 0 0 1 1-1h4a1 1 0 0 1 0 2H5v3a1 1 0 0 1-2 0Zm12-1h5a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V5h-4a1 1 0 1 1 0-2ZM4 15a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Zm16 0a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-5a1 1 0 1 1 0-2h4v-3a1 1 0 0 1 1-1ZM8 8h8v8H8Z"/></svg><span>Masks</span></a>
+    <a data-go="control"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.6 2.9a1 1 0 0 1 1.1-.2l13 6.4a1 1 0 0 1-.1 1.9l-5.2 1.6 3.4 5.9a1 1 0 0 1-.4 1.4l-1.6.9a1 1 0 0 1-1.4-.4l-3.4-5.9-3.7 4a1 1 0 0 1-1.7-.7V3.6a1 1 0 0 1 0-.7Z"/></svg><span>Control</span></a>
+    <a data-go="quality"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7.2a3 3 0 0 1 5.6 0H20a1 1 0 1 1 0 2h-3.2a3 3 0 0 1-5.6 0H4a1 1 0 0 1 0-2Zm10 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2ZM4 16h3.2a3 3 0 0 1 5.6 0H20a1 1 0 1 1 0 2h-7.2a3 3 0 0 1-5.6 0H4a1 1 0 1 1 0-2Zm6 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/></svg><span>Quality</span></a>
+    <a data-go="journal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 4a1 1 0 0 0 0 2h10a1 1 0 1 0 0-2Zm0 4a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2Zm0 4a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2Z"/></svg><span>Journal</span></a>
+  </div>
+  <div class="foot">
+    <span id="headGuest" class="pill">no guest</span>
+    <button id="stopAll" class="danger" hidden>Stop sharing</button>
+    <button id="quit" class="quiet">Quit PartyPortal</button>
+  </div>
+</nav>
 <main>
   <section id="modeBanner" class="banner" hidden></section>
   <section id="permBanner" class="banner" hidden>
@@ -90,10 +128,12 @@
     <p class="dim">After you grant Screen Recording, macOS will ask to restart PartyPortal — let it.</p>
   </section>
 
-  <div class="col">
+  <!-- Share: the one thing most visits are for — a window, and a link to it. -->
+  <div class="page" data-page="share">
+    <h1>Share a window</h1>
     <section id="pickCard">
-      <h2>Pick a window to share</h2>
-      <div class="row" style="margin-bottom:10px">
+      <h2>Pick a window</h2>
+      <div class="row" style="margin-bottom:12px">
         <button id="refresh">Refresh list</button>
         <button id="testwin" hidden>Open test window</button>
         <span id="pickNote" class="dim"></span>
@@ -103,36 +143,45 @@
 
     <section id="shareCard" hidden>
       <h2>What the guest sees</h2>
-      <div class="row" style="margin-bottom:10px">
-        <b id="shareTitle"></b><span id="shareStats" class="dim"></span><span class="grow" style="flex:1"></span>
+      <div class="row" style="margin-bottom:12px">
+        <b id="shareTitle"></b><span id="shareStats" class="dim"></span><span class="grow"></span>
         <button id="focus">Bring window to front</button>
         <button id="change">Another window</button>
       </div>
-      <div id="stage"><img id="preview" alt=""><div id="overlay"></div></div>
-      <p class="dim">Drag on the picture to draw a mask. A mask can be moved, and resized by its round handle. Yellow dashes mark places the guest cannot click because of the general locks.</p>
-      <div id="masklist"></div>
+      <img id="previewMini" alt="">
+      <p class="dim">Hide parts of it or block clicks on <a data-go="masks">Masks</a>.</p>
     </section>
 
     <section>
-      <h2>Journal</h2>
-      <div id="log"></div>
+      <h2>Link for your guest</h2>
+      <div id="publicBox"></div>
+      <p id="guestLine" class="dim" style="margin-top:12px">Nobody is connected.</p>
+      <div class="row"><button id="kick" class="danger" hidden>Kick and replace link</button></div>
+    </section>
+
+    <section>
+      <h2>On this Mac</h2>
+      <p class="dim">The same page without the internet, to try it yourself:</p>
+      <div class="link"><input id="localLink" type="text" readonly><button data-copy="localLink">Copy</button></div>
+      <div class="row"><button id="newToken">Replace link</button><span class="dim">the old one stops working</span></div>
     </section>
   </div>
 
-  <div class="col">
-    <section>
-      <h2>Guest</h2>
-      <p id="guestLine" class="dim">Nobody is connected.</p>
-      <div class="row">
-        <button id="kick" class="danger" hidden>Kick and replace link</button>
-      </div>
-      <p style="margin-top:12px"><b>Link for your guest</b></p>
-      <div id="publicBox"></div>
-      <p class="dim" style="margin-top:12px">To try it on this Mac:</p>
-      <div class="link"><input id="localLink" type="text" readonly><button data-copy="localLink">Copy</button></div>
-      <div class="row"><button id="newToken">Replace link</button></div>
+  <!-- Masks: what the guest must not see or touch inside the window. -->
+  <div class="page" data-page="masks" hidden>
+    <h1>Masks</h1>
+    <section id="maskEmpty"><p class="dim">Masks are drawn on the shared window. <a data-go="share">Share a window</a> first.</p></section>
+    <section id="maskCard" hidden>
+      <h2>Draw on the picture</h2>
+      <div id="stage"><img id="preview" alt=""><div id="overlay"></div></div>
+      <p class="dim">Drag on the picture to draw a mask. A mask can be moved, and resized by its round handle. Yellow dashes mark places the guest cannot click because of the locks on <a data-go="control">Control</a>.</p>
+      <div id="masklist"></div>
     </section>
+  </div>
 
+  <!-- Control: how the guest's input reaches the window and what it may do there. -->
+  <div class="page" data-page="control" hidden>
+    <h1>Control</h1>
     <section>
       <h2>How the guest gets in</h2>
       <label class="check"><input type="radio" name="bgMode" value="background"><span><b>In the background</b> <span class="dim">— your pointer and the app you are using stay yours; the guest's clicks, scrolling and keys go straight to the shared window</span></span></label>
@@ -143,14 +192,17 @@
     </section>
 
     <section>
-      <h2>Locks</h2>
+      <h2>What the guest may do</h2>
       <label class="check"><input type="checkbox" data-lock="viewOnly"><span>View only <span class="dim">— the guest cannot click or type</span></span></label>
       <label class="check"><input type="checkbox" data-lock="keyboard"><span>Keyboard allowed</span></label>
       <label class="check"><input type="checkbox" data-lock="titleButtons"><span>Block the window buttons <span class="dim">— close, minimize, zoom</span></span></label>
       <label class="check"><input type="checkbox" data-lock="edges"><span>Block dragging the window edges</span></label>
       <label class="check"><input type="checkbox" data-lock="frameGuard"><span>Put the window back if the guest moved or resized it</span></label>
       <label class="check"><input type="checkbox" data-lock="autoFocus"><span>Bring the window to the front when the guest clicks the picture</span></label>
-      <p style="margin-top:12px"><b>Keyboard shortcuts</b></p>
+    </section>
+
+    <section>
+      <h2>Keyboard shortcuts</h2>
       <select id="cmdMode">
         <option value="list">Block the shortcuts in the list</option>
         <option value="all">Block every ⌘ shortcut</option>
@@ -163,21 +215,30 @@
       </div>
       <p class="dim">System shortcuts (⌘Tab, ⌘Space, Mission Control, screenshots) are always blocked.</p>
     </section>
+  </div>
 
+  <!-- Quality: picture, sound and the path they take. -->
+  <div class="page" data-page="quality" hidden>
+    <h1>Quality</h1>
     <section>
-      <h2>Quality</h2>
+      <h2>Picture</h2>
       <div class="row">
         <select id="vDim"><option value="1280">up to 1280 px</option><option value="1600">up to 1600 px</option><option value="1920">up to 1920 px</option><option value="2560">up to 2560 px</option></select>
         <select id="vFps"><option value="30">30 fps</option><option value="60">60 fps</option></select>
         <select id="vKbps"><option value="3000">3 Mbps</option><option value="6000">6 Mbps</option><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="20000">20 Mbps</option></select>
       </div>
-      <label class="check" style="margin-top:8px"><input type="checkbox" id="vDirect"><span>Direct connection <span class="dim">— video goes between the two computers over UDP instead of a relay; if that fails, PartyPortal falls back to the relay by itself</span></span></label>
-      <label class="check"><input type="checkbox" id="vAudio"><span>Send sound <span class="dim">— the guest hears the whole app that owns the window, not just this window</span></span></label>
     </section>
-
     <section>
-      <div class="row"><button id="quit">Quit PartyPortal</button><span class="dim">sharing stops and the link stops working</span></div>
+      <h2>Sound and connection</h2>
+      <label class="check"><input type="checkbox" id="vAudio"><span>Send sound <span class="dim">— the guest hears the whole app that owns the window, not just this window</span></span></label>
+      <label class="check"><input type="checkbox" id="vDirect"><span>Direct connection <span class="dim">— video goes between the two computers over UDP instead of a relay; if that fails, PartyPortal falls back to the relay by itself</span></span></label>
     </section>
+  </div>
+
+  <!-- Journal: what happened, newest first. -->
+  <div class="page" data-page="journal" hidden>
+    <h1>Journal</h1>
+    <section><div id="log"></div></section>
   </div>
 </main>
 <script>
@@ -207,6 +268,9 @@
     const sharing = s.sharing
     $('stopAll').hidden = !sharing
     $('shareCard').hidden = !sharing
+    $('maskCard').hidden = !sharing
+    $('maskEmpty').hidden = !!sharing
+    if (!sharing) $('previewMini').removeAttribute('src')
     $('pickCard').hidden = !!sharing && !choosing
     $('testwin').hidden = !s.testwin || s.fake
 
@@ -364,10 +428,23 @@
     previewBusy = true
     try {
       const r = await fetch('/api/preview.jpg')
-      if (r.ok) { const url = URL.createObjectURL(await r.blob()), img = $('preview'), old = img.src; img.src = url; if (old.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(old), 1000) }
+      if (r.ok) { const url = URL.createObjectURL(await r.blob()), img = $('preview'), old = img.src; img.src = url; $('previewMini').src = url; if (old.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(old), 1000) }
     } catch {}
     previewBusy = false
   }, 900)
+
+  // ---- pages ----
+  const PAGES = ['share', 'masks', 'control', 'quality', 'journal']
+  function go(name) {
+    const page = PAGES.includes(name) ? name : 'share'
+    document.querySelectorAll('.page').forEach(el => { el.hidden = el.dataset.page !== page })
+    document.querySelectorAll('#side a').forEach(el => el.classList.toggle('active', el.dataset.go === page))
+    if (location.hash !== '#' + page) history.replaceState(null, '', '#' + page)
+    document.querySelector('main').scrollTop = 0
+  }
+  document.addEventListener('click', e => { const link = e.target.closest('[data-go]'); if (link) go(link.dataset.go) })
+  addEventListener('hashchange', () => go(location.hash.slice(1)))
+  go(location.hash.slice(1))
 
   // ---- actions ----
   // In the app's own window the pasteboard is the app's job; in a browser tab, the browser's.
@@ -408,7 +485,7 @@
   $('vDim').onchange = $('vFps').onchange = $('vKbps').onchange = $('vAudio').onchange = $('vDirect').onchange = saveVideo
   $('refresh').onclick = () => loadWindows(true)
   $('stopAll').onclick = () => { choosing = false; lastWindows = ''; act('/api/stop') }
-  $('change').onclick = () => { choosing = true; $('pickCard').hidden = false; loadWindows(true); $('pickCard').scrollIntoView({ behavior: 'smooth' }) }
+  $('change').onclick = () => { choosing = true; $('pickCard').hidden = false; loadWindows(true); document.querySelector('main').scrollTop = 0 }
   $('focus').onclick = () => act('/api/focus')
   $('kick').onclick = () => act('/api/kick')
   $('newToken').onclick = () => { if (confirm('The old link will stop working. Replace it?')) act('/api/token') }

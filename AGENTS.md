@@ -81,6 +81,9 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - In track mode read `window.__pp.track` instead (fps, kbps, `freeze` ms, lost %, size, jitter buffer ms) and
   `bridgeDiag.track` in `/api/state` for the sender's side (encoder fps, size, `limit`, WebRTC's `budget`).
   Take pixels from the `<video id="tv">`, not the canvas — the canvas is stale while a track plays.
+- The panel is one page at a time behind a sidebar (Share, Masks, Control, Quality, Journal; `#name` in the
+  address). Share is the main screen — a window and a link — and nothing else goes on it; a new setting belongs
+  on the page it is about, or on a new one.
 - The menu bar mark cannot be screenshotted from a script: `partyportal --mark-preview out.png` draws every
   state on a light and a dark strip. The window's page is web/host.html — look at it in a browser at the panel's
   address. Both pages share one palette (Discord-like) and one rule: controls in a row have one height
