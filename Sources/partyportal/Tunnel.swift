@@ -4,9 +4,15 @@
 import Foundation
 
 final class Tunnel {
-    static let binary: String? = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"].first {
-        FileManager.default.isExecutableFile(atPath: $0)
-    }
+    /// The copy inside the app comes first (build-app.sh puts it beside our executable), so a host needs nothing
+    /// but the app. A bare binary from `swift build` has none and falls back to Homebrew's.
+    static let binary: String? = {
+        let bundled = Bundle.main.executableURL?.resolvingSymlinksInPath()
+            .deletingLastPathComponent().appendingPathComponent("cloudflared").path
+        return ([bundled].compactMap { $0 } + ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]).first {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }
+    }()
 
     private var process: Process?
     private(set) var url: String?

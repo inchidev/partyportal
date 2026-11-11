@@ -49,7 +49,9 @@ The app is installed to `~/Applications` on purpose. Launched from `~/Documents`
 macOS asks for access to that folder the first time the video encoder starts and the picture freezes until you answer.
 
 The public link uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
-(`brew install cloudflared`). It carries the page and the connection handshake; the media goes direct.
+It carries the page and the connection handshake; the media goes direct. `cloudflared` travels inside the app:
+`build-app.sh` copies the one on your Mac into the bundle (`brew install cloudflared` before building), so whoever
+gets the built app installs nothing else.
 
 ## For agents and scripts
 
