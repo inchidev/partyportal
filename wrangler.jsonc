@@ -1,0 +1,12 @@
+{
+  // The landing page at https://partyportal.inchi.dev: static files from site/, served by Cloudflare Workers.
+  // Deploy with `npx wrangler deploy` from the repository root.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "partyportal-site",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./site",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "partyportal.inchi.dev", "custom_domain": true }]
+}

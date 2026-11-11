@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PartyPortal">
+  <!-- A window with a doorway cut into it. The doorway is a real hole: whatever is behind shows through. -->
+  <path fill="#4a35ff" fill-rule="evenodd" d="M12 4h40a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8V12a8 8 0 0 1 8-8zM23 60V37a9 9 0 0 1 18 0v23z"/>
+  <circle cx="16.5" cy="16.5" r="4" fill="#ffcf24"/>
+</svg>

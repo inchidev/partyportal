@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PartyPortal — a link to one window</title>
+<meta name="description" content="Share a single window of your Mac with someone's browser. They see only that window and can use it within the rules you set. Open source, peer to peer, nothing to install for the guest.">
+<link rel="canonical" href="https://partyportal.inchi.dev/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://partyportal.inchi.dev/">
+<meta property="og:title" content="PartyPortal — a link to one window">
+<meta property="og:description" content="Share a single window of your Mac with someone's browser. They see only that window and can use it within the rules you set.">
+<meta property="og:image" content="https://partyportal.inchi.dev/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://partyportal.inchi.dev/assets/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  /* Five colours, flat. Paper, ink, portal (the one accent), tape (masks and warnings), and a quiet line. */
+  :root {
+    color-scheme: light dark;
+    --paper: #f5f2ea;
+    --ink: #121417;
+    --portal: #4a35ff;
+    --tape: #ffcf24;
+    --line: #b9b4a6;
+    --tint: #e9e5d9;
+    --dim: #575b63;
+    --on-portal: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #121417;
+      --ink: #f1eee6;
+      --portal: #8f82ff;
+      --tape: #ffcf24;
+      --line: #4a4e57;
+      --tint: #1c1f25;
+      --dim: #a4a8b0;
+      --on-portal: #121417;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 400 18px/1.55 "Bricolage Grotesque", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-optical-sizing: auto;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  a { color: inherit; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+  a:hover { color: var(--portal); }
+  code, pre, .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; }
+  code { font-size: 0.86em; background: var(--tint); padding: 2px 5px; border-radius: 3px; }
+
+  /* Header */
+  header .wrap { display: flex; align-items: center; gap: 28px; padding-top: 22px; padding-bottom: 22px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 800; font-size: 22px; letter-spacing: -0.02em; }
+  .brand svg { width: 30px; height: 30px; display: block; }
+  .brand:hover { color: inherit; }
+  nav { margin-left: auto; display: flex; gap: 24px; font-size: 16px; }
+  nav a { text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+
+  /* Hero */
+  .hero { padding-top: 56px; padding-bottom: 28px; }
+  .tag { display: inline-block; font: 600 13px/1 "JetBrains Mono", ui-monospace, monospace; letter-spacing: 0.04em; text-transform: uppercase; border: 1.5px solid var(--ink); border-radius: 3px; padding: 7px 9px; }
+  h1 { margin: 22px 0 0; font-weight: 800; font-size: clamp(48px, 9.4vw, 120px); line-height: 0.95; letter-spacing: -0.035em; max-width: 11ch; }
+  h1 em { font-style: normal; color: var(--portal); }
+  .lede { margin: 28px 0 0; font-size: clamp(19px, 2.1vw, 24px); line-height: 1.4; max-width: 34em; }
+  .lede b { font-weight: 600; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+  .btn { display: inline-block; font-weight: 600; font-size: 17px; text-decoration: none; padding: 13px 20px; border-radius: 4px; border: 1.5px solid var(--ink); }
+  .btn.solid { background: var(--ink); color: var(--paper); }
+  .btn.solid:hover { background: var(--portal); border-color: var(--portal); color: var(--on-portal); }
+  .btn:hover { color: var(--portal); border-color: var(--portal); }
+
+  /* Illustration */
+  figure { margin: 56px 0 0; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figure svg.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+  .fig-stack { display: none; }
+  .hop { position: relative; display: flex; justify-content: center; padding: 10px 0; }
+  .hop::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 3px; margin-left: -1.5px; background: var(--portal); }
+  .hop span { position: relative; font: 600 13px/1 "JetBrains Mono", ui-monospace, monospace; background: var(--portal); color: var(--on-portal); padding: 9px 11px; border-radius: 4px; margin: 14px 0; }
+  .captions { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 14px; font-size: 15px; color: var(--dim); }
+  .captions b { color: var(--ink); font-weight: 600; }
+  .s-line { stroke: var(--line); } .s-ink { stroke: var(--ink); } .s-portal { stroke: var(--portal); }
+  .f-paper { fill: var(--paper); } .f-tint { fill: var(--tint); } .f-ink { fill: var(--ink); } .f-line { fill: var(--line); }
+  .f-portal { fill: var(--portal); } .f-tape { fill: var(--tape); } .f-on-portal { fill: var(--on-portal); } .f-dim { fill: var(--dim); }
+  .svg-label { font: 600 13px "JetBrains Mono", ui-monospace, monospace; }
+
+  /* Sections */
+  section { padding: 84px 0 0; }
+  .rule { border: 0; border-top: 1.5px solid var(--ink); margin: 0; }
+  .kicker { font: 600 13px/1 "JetBrains Mono", ui-monospace, monospace; letter-spacing: 0.06em; text-transform: uppercase; color: var(--portal); margin: 22px 0 0; }
+  h2 { margin: 14px 0 0; font-weight: 800; font-size: clamp(32px, 4.6vw, 56px); line-height: 1.02; letter-spacing: -0.035em; max-width: 18ch; }
+  h3 { margin: 0; font-weight: 600; font-size: 21px; line-height: 1.25; letter-spacing: -0.01em; }
+  p { margin: 14px 0 0; max-width: 38em; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; margin-top: 30px; align-items: start; }
+  .two > div > p:first-child { margin-top: 0; }
+
+  /* Commands */
+  .cmd { position: relative; margin: 18px 0 0; background: var(--tint); border: 1.5px solid var(--ink); border-radius: 4px; }
+  .cmd pre { margin: 0; padding: 16px 18px; overflow-x: auto; font-size: 14.5px; line-height: 1.6; white-space: pre; }
+  .cmd.wrapped pre { white-space: pre-wrap; word-break: break-word; }
+  .cmd .out { border-top: 1.5px solid var(--line); color: var(--dim); }
+  .cmd button { position: absolute; top: 8px; right: 8px; font: 600 12px/1 "JetBrains Mono", ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink); background: var(--paper); border: 1.5px solid var(--ink); border-radius: 3px; padding: 6px 8px; cursor: pointer; }
+  .cmd button:hover { background: var(--ink); color: var(--paper); }
+  .cmd.has-copy pre:first-of-type { padding-right: 76px; }
+  .note { font-size: 15.5px; color: var(--dim); }
+
+  /* Steps */
+  .steps { list-style: none; margin: 34px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1.5px solid var(--ink); border-radius: 4px; }
+  .steps li { padding: 24px; border-left: 1.5px solid var(--ink); }
+  .steps li:first-child { border-left: 0; }
+  .steps .n { font: 600 13px/1 "JetBrains Mono", ui-monospace, monospace; color: var(--portal); }
+  .steps h3 { margin-top: 14px; }
+  .steps p { margin-top: 8px; font-size: 16.5px; }
+
+  /* The "cannot" list */
+  .cant { list-style: none; margin: 34px 0 0; padding: 0; border-top: 1.5px solid var(--line); }
+  .cant li { display: grid; grid-template-columns: 28px minmax(0, 15em) minmax(0, 1fr); gap: 16px; padding: 18px 0; border-bottom: 1.5px solid var(--line); align-items: baseline; }
+  .cant svg { width: 18px; height: 18px; align-self: center; }
+  .cant b { font-weight: 600; font-size: 19px; }
+  .cant span { font-size: 16.5px; color: var(--dim); }
+
+  /* Facts */
+  .facts { margin: 30px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+  .facts li { border-top: 1.5px solid var(--ink); padding-top: 14px; font-size: 16.5px; }
+  .facts .big { display: block; font-weight: 800; font-size: 40px; line-height: 1; letter-spacing: -0.03em; margin-bottom: 8px; }
+
+  /* Friends */
+  .friends { background: var(--tape); color: #121417; border-radius: 4px; padding: 40px; margin-top: 84px; }
+  .friends h2 { margin-top: 0; }
+  .friends .kicker { color: #121417; margin-top: 0; margin-bottom: 14px; }
+  .friends p { max-width: 36em; }
+
+  /* Status */
+  .status { margin-top: 30px; border: 1.5px solid var(--ink); border-radius: 4px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .status > div { padding: 24px; }
+  .status > div + div { border-left: 1.5px solid var(--ink); }
+  .status dl { margin: 0; display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 10px 16px; font-size: 16.5px; }
+  .status dt { color: var(--dim); }
+  .status dd { margin: 0; }
+  .status ul { margin: 12px 0 0; padding-left: 20px; font-size: 16.5px; }
+  .status li { margin-top: 6px; }
+
+  footer { margin-top: 96px; border-top: 1.5px solid var(--ink); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; padding-top: 24px; padding-bottom: 40px; font-size: 16px; }
+  footer .push { margin-left: auto; }
+
+  @media (max-width: 820px) {
+    body { font-size: 17px; }
+    nav a.opt { display: none; }
+    .hero { padding-top: 32px; }
+    section { padding-top: 64px; }
+    .two { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .steps { grid-template-columns: minmax(0, 1fr); }
+    .steps li { border-left: 0; border-top: 1.5px solid var(--ink); }
+    .steps li:first-child { border-top: 0; }
+    .cant li { grid-template-columns: 28px minmax(0, 1fr); }
+    .cant span { grid-column: 2; }
+    .facts { grid-template-columns: minmax(0, 1fr); }
+    .status { grid-template-columns: minmax(0, 1fr); }
+    .status > div + div { border-left: 0; border-top: 1.5px solid var(--ink); }
+    .friends { padding: 28px 22px; margin-top: 64px; }
+    .captions { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .svg-label { display: none; }
+    .fig-wide { display: none !important; }
+    .fig-stack { display: block; }
+    .cmd pre { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; }
+    .cmd.has-copy pre:first-of-type { padding-top: 44px; padding-right: 18px; }
+    .cmd pre.out { white-space: pre; word-break: normal; font-size: 12.5px; }
+    footer .push { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="PartyPortal home">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><path class="f-portal" fill-rule="evenodd" d="M12 4h40a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8V12a8 8 0 0 1 8-8zM23 60V37a9 9 0 0 1 18 0v23z"/><circle cx="16.5" cy="16.5" r="4" class="f-tape"/></svg>
+      PartyPortal
+    </a>
+    <nav>
+      <a class="opt" href="#agents">For agents</a>
+      <a class="opt" href="#rules">The rules</a>
+      <a class="opt" href="#install">Install</a>
+      <a href="https://github.com/inchidev/partyportal">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <span class="tag">Early prototype · macOS · MIT</span>
+    <h1>A link to <em>one</em> window.</h1>
+    <p class="lede">Share a single window of your Mac with someone's browser. They see <b>only that window</b> and can use it within the rules you set. Open source. A direct connection is free.</p>
+    <div class="actions">
+      <a class="btn solid" href="https://github.com/inchidev/partyportal">Get it on GitHub</a>
+      <a class="btn" href="#how">How it works</a>
+    </div>
+
+    <figure>
+      <!-- Drawn to match the product: one window of several is picked, masked on the host, and arrives in a browser or a phone.
+           The two halves live in a zero-size sprite so the wide figure and the stacked phone figure can both draw them. -->
+      <svg class="sprite" aria-hidden="true" focusable="false">
+        <defs>
+          <pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="10" height="10" class="f-tape"/>
+            <rect width="4" height="10" fill="#121417"/>
+          </pattern>
+          <g id="g-mac">
+        <!-- The Mac -->
+            <rect x="1" y="1" width="560" height="400" rx="10" class="f-tint s-line" stroke-width="1.5"/>
+            <line x1="1" y1="27" x2="561" y2="27" class="s-line" stroke-width="1.5"/>
+            <circle cx="20" cy="14" r="4" class="f-line"/>
+            <rect x="36" y="11" width="46" height="6" rx="2" class="f-line"/>
+            <rect x="92" y="11" width="30" height="6" rx="2" class="f-line"/>
+
+            <!-- Two windows that stay private -->
+            <g>
+              <rect x="26" y="150" width="220" height="170" rx="7" class="f-paper s-line" stroke-width="1.5"/>
+              <circle cx="42" cy="166" r="4" class="f-line"/><circle cx="56" cy="166" r="4" class="f-line"/><circle cx="70" cy="166" r="4" class="f-line"/>
+              <rect x="42" y="190" width="90" height="7" rx="2" class="f-line"/>
+              <rect x="42" y="206" width="76" height="7" rx="2" class="f-line"/>
+              <rect x="42" y="222" width="96" height="7" rx="2" class="f-line"/>
+              <rect x="42" y="238" width="64" height="7" rx="2" class="f-line"/>
+              <rect x="42" y="254" width="84" height="7" rx="2" class="f-line"/>
+            </g>
+            <g>
+              <rect x="318" y="262" width="222" height="124" rx="7" class="f-paper s-line" stroke-width="1.5"/>
+              <circle cx="334" cy="278" r="4" class="f-line"/><circle cx="348" cy="278" r="4" class="f-line"/><circle cx="362" cy="278" r="4" class="f-line"/>
+              <rect x="334" y="302" width="96" height="60" rx="3" class="f-line"/>
+              <rect x="442" y="302" width="82" height="7" rx="2" class="f-line"/>
+              <rect x="442" y="318" width="60" height="7" rx="2" class="f-line"/>
+            </g>
+
+            <!-- The shared window -->
+            <g>
+              <rect x="150" y="104" width="310" height="212" rx="8" class="f-paper s-portal" stroke-width="4"/>
+              <line x1="150" y1="136" x2="460" y2="136" class="s-ink" stroke-width="1.5"/>
+              <!-- close button, blocked -->
+              <circle cx="170" cy="120" r="7.5" class="f-paper s-ink" stroke-width="2"/>
+              <line x1="164.7" y1="125.3" x2="175.3" y2="114.7" class="s-ink" stroke-width="2"/>
+              <circle cx="192" cy="120" r="5" class="f-ink"/><circle cx="210" cy="120" r="5" class="f-ink"/>
+              <rect x="170" y="156" width="118" height="12" rx="2" class="f-ink"/>
+              <rect x="170" y="180" width="96" height="7" rx="2" class="f-line"/>
+              <rect x="170" y="196" width="110" height="7" rx="2" class="f-line"/>
+              <rect x="170" y="212" width="80" height="7" rx="2" class="f-line"/>
+              <rect x="170" y="258" width="92" height="34" rx="4" class="f-portal"/>
+              <rect x="188" y="271" width="56" height="8" rx="2" class="f-on-portal"/>
+              <!-- mask, as the host sees it -->
+              <rect x="304" y="156" width="136" height="72" rx="3" fill="url(#hatch)" class="s-ink" stroke-width="2"/>
+              <rect x="304" y="246" width="136" height="7" rx="2" class="f-line"/>
+              <rect x="304" y="262" width="100" height="7" rx="2" class="f-line"/>
+            </g>
+
+            <!-- callouts -->
+            <g class="svg-label">
+              <line x1="170" y1="112" x2="170" y2="82" class="s-ink" stroke-width="1.5"/>
+              <text x="150" y="72" class="f-ink">close: blocked</text>
+              <line x1="372" y1="156" x2="372" y2="82" class="s-ink" stroke-width="1.5"/>
+              <text x="300" y="72" class="f-ink">masked: stays on your Mac</text>
+            </g>
+            <text x="1" y="430" class="f-ink svg-label">your Mac</text>
+          </g>
+          <g id="g-guest">
+        <!-- their browser -->
+            <g>
+              <rect x="690" y="52" width="296" height="268" rx="8" class="f-paper s-ink" stroke-width="2"/>
+              <line x1="690" y1="86" x2="986" y2="86" class="s-ink" stroke-width="1.5"/>
+              <rect x="704" y="62" width="210" height="14" rx="3" class="f-tint s-line" stroke-width="1.5"/>
+              <circle cx="966" cy="69" r="5" class="f-line"/><circle cx="948" cy="69" r="5" class="f-line"/>
+              <!-- the window, and nothing else -->
+              <rect x="706" y="104" width="264" height="180" rx="6" class="f-paper s-portal" stroke-width="3"/>
+              <line x1="706" y1="131" x2="970" y2="131" class="s-ink" stroke-width="1.5"/>
+              <circle cx="722" cy="118" r="5.5" class="f-paper s-ink" stroke-width="1.5"/>
+              <circle cx="740" cy="118" r="4" class="f-ink"/><circle cx="755" cy="118" r="4" class="f-ink"/>
+              <rect x="722" y="148" width="100" height="10" rx="2" class="f-ink"/>
+              <rect x="722" y="168" width="82" height="6" rx="2" class="f-line"/>
+              <rect x="722" y="182" width="94" height="6" rx="2" class="f-line"/>
+              <rect x="722" y="196" width="68" height="6" rx="2" class="f-line"/>
+              <rect x="722" y="235" width="78" height="29" rx="4" class="f-portal"/>
+              <rect x="737" y="246" width="48" height="7" rx="2" class="f-on-portal"/>
+              <!-- the same mask, as the guest gets it: painted over -->
+              <rect x="836" y="148" width="116" height="61" rx="3" class="f-ink"/>
+              <rect x="836" y="225" width="116" height="6" rx="2" class="f-line"/>
+              <rect x="836" y="239" width="85" height="6" rx="2" class="f-line"/>
+              <!-- pointer -->
+              <path d="M770 252 l0 22 6 -6 5 11 5 -2 -5 -11 9 0z" class="f-ink" stroke="var(--paper)" stroke-width="1.5"/>
+            </g>
+
+            <!-- or a phone -->
+            <g>
+              <rect x="1016" y="120" width="102" height="200" rx="14" class="f-paper s-ink" stroke-width="2"/>
+              <rect x="1052" y="129" width="30" height="5" rx="2.5" class="f-line"/>
+              <rect x="1026" y="186" width="82" height="56" rx="3" class="f-paper s-portal" stroke-width="2.5"/>
+              <line x1="1026" y1="196" x2="1108" y2="196" class="s-ink" stroke-width="1"/>
+              <rect x="1032" y="202" width="30" height="4" rx="1" class="f-ink"/>
+              <rect x="1032" y="211" width="26" height="3" rx="1" class="f-line"/>
+              <rect x="1032" y="226" width="24" height="9" rx="2" class="f-portal"/>
+              <rect x="1067" y="202" width="35" height="18" rx="1.5" class="f-ink"/>
+            </g>
+            <g class="svg-label">
+              <text x="690" y="350" class="f-ink">their browser</text>
+              <text x="1016" y="350" class="f-ink">or a phone</text>
+            </g>
+          </g>
+        </defs>
+      </svg>
+
+      <svg class="fig-wide" viewBox="0 0 1120 440" role="img" aria-labelledby="fig-title fig-desc">
+        <title id="fig-title">One window travels as a link</title>
+        <desc id="fig-desc">A Mac desktop with three windows. One is outlined and connected by a link to a browser and a phone, which show only that window. A masked area is hatched on the Mac and painted solid for the guest. The window's close button is blocked.</desc>
+        <use href="#g-mac"/>
+        <!-- the link -->
+        <line x1="462" y1="210" x2="664" y2="210" class="s-portal" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round"/>
+        <path d="M664 198 l18 12 -18 12z" class="f-portal"/>
+        <rect x="508" y="172" width="150" height="30" rx="4" class="f-portal"/>
+        <text x="583" y="192" text-anchor="middle" class="f-on-portal" style="font: 600 13px 'JetBrains Mono', ui-monospace, monospace">https://…/#t=…</text>
+        <use href="#g-guest"/>
+      </svg>
+
+      <!-- The same picture for narrow screens: the Mac, the link, then the guest's side. -->
+      <div class="fig-stack" aria-hidden="true">
+        <svg viewBox="0 0 562 402"><use href="#g-mac"/></svg>
+        <div class="hop"><span>https://…/#t=…</span></div>
+        <svg viewBox="684 46 440 282"><use href="#g-guest"/></svg>
+      </div>
+      <figcaption class="captions">
+        <span><b>On your Mac</b> you pick one window, hatch out what is private and block what is off-limits. Everything else on the screen is never captured.</span>
+        <span><b>In their browser</b> the guest gets that window and nothing else. Masked areas arrive already painted over.</span>
+      </figcaption>
+    </figure>
+  </div>
+
+  <section id="agents">
+    <div class="wrap">
+      <hr class="rule">
+      <p class="kicker">For agents and developers</p>
+      <h2>Your agent can hand you the window.</h2>
+      <div class="two">
+        <div>
+          <p>A coding agent running on your Mac builds the app, launches it, and then needs a human to look. With one command it starts a share and gets a URL back. You open it on your phone and poke the real thing: taps, drags and two-finger scroll all work on the guest page.</p>
+          <p>The link shows that one window. Not your editor, not your terminal, not the rest of the desktop.</p>
+          <p class="note">Add <code>--view-only</code> when the guest should watch but not touch.</p>
+        </div>
+        <div>
+          <div class="cmd has-copy">
+            <button type="button" data-copy="agent-cmd" hidden>Copy</button>
+            <pre id="agent-cmd">partyportal --window "Simulator" \
+  --public --print-link --no-open</pre>
+            <pre class="out">{"local":"http://127.0.0.1:7374/#t=…",
+ "type":"link",
+ "url":"https://….trycloudflare.com/#t=…",
+ "window":"Simulator"}</pre>
+          </div>
+          <p class="note">One JSON line on stdout, as soon as the public link is up. The journal goes to stderr.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <hr class="rule">
+      <p class="kicker">How it works</p>
+      <h2>Pick, fence off, send.</h2>
+      <ol class="steps">
+        <li>
+          <span class="n">01</span>
+          <h3>Pick a window</h3>
+          <p>The host panel lists the windows open on your Mac. Choose one. That window is the whole stream.</p>
+        </li>
+        <li>
+          <span class="n">02</span>
+          <h3>Draw the rules</h3>
+          <p>Drag rectangles over what should be hidden or untouchable, and choose which shortcuts are off-limits.</p>
+        </li>
+        <li>
+          <span class="n">03</span>
+          <h3>Send the link</h3>
+          <p>The guest opens it in a browser. Nothing to install, no account. You can cut them off with one button.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="rules">
+    <div class="wrap">
+      <hr class="rule">
+      <p class="kicker">The rules</p>
+      <h2>What the guest cannot do.</h2>
+      <p>Every rule is enforced on your Mac, not in the guest's browser, so rewriting the page changes nothing.</p>
+      <ul class="cant">
+        <li>
+          <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" class="s-ink" stroke-width="2"/><line x1="3.8" y1="14.2" x2="14.2" y2="3.8" class="s-ink" stroke-width="2"/></svg>
+          <b>See outside the window</b>
+          <span>Only that window is captured. Other windows, the desktop and the menu bar are never in the stream.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" class="s-ink" stroke-width="2"/><line x1="3.8" y1="14.2" x2="14.2" y2="3.8" class="s-ink" stroke-width="2"/></svg>
+          <b>See what you masked</b>
+          <span>Masks are painted over on your Mac before the video is encoded. Those pixels never leave it.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" class="s-ink" stroke-width="2"/><line x1="3.8" y1="14.2" x2="14.2" y2="3.8" class="s-ink" stroke-width="2"/></svg>
+          <b>Click where you said no</b>
+          <span>A mask can also swallow clicks: the button is visible, or not, but pressing it does nothing.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" class="s-ink" stroke-width="2"/><line x1="3.8" y1="14.2" x2="14.2" y2="3.8" class="s-ink" stroke-width="2"/></svg>
+          <b>Close, minimise, resize or move it</b>
+          <span>The window buttons and edges do not take the guest's clicks, and a window that moved is put back.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" class="s-ink" stroke-width="2"/><line x1="3.8" y1="14.2" x2="14.2" y2="3.8" class="s-ink" stroke-width="2"/></svg>
+          <b>Leave the window</b>
+          <span>⌘Tab, Mission Control and Spotlight are always refused. Input flows only while that window is in front.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7.5" fill="none" class="s-ink" stroke-width="2"/><line x1="3.8" y1="14.2" x2="14.2" y2="3.8" class="s-ink" stroke-width="2"/></svg>
+          <b>Use shortcuts you block</b>
+          <span>⌘Q, ⌘W and friends are blocked by default. Add your own, or refuse every ⌘ combination.</span>
+        </li>
+      </ul>
+      <p class="note">These are rules on input, not a sandbox. What the guest does inside the window with the keys and clicks you allow is up to them.</p>
+    </div>
+  </section>
+
+  <section id="transport">
+    <div class="wrap">
+      <hr class="rule">
+      <p class="kicker">Transport</p>
+      <h2>Straight from your Mac to their browser.</h2>
+      <p>Video, the app's sound and the guest's input travel peer to peer over UDP (WebRTC) whenever the two networks allow it. If they do not, PartyPortal falls back to a tunnel on its own and says so on screen.</p>
+      <ul class="facts">
+        <li><span class="big">13 ms</span>Average delay of a frame behind real time at 8 Mbps, measured on one network.</li>
+        <li><span class="big">H.264 + Opus</span>Hardware-encoded video and the shared app's audio. Silence is not sent.</li>
+        <li><span class="big">Free</span>A direct connection costs nobody anything. A relay for strict NATs is planned as the paid part.</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <div class="friends">
+      <p class="kicker">For friends</p>
+      <h2>One computer. Take turns.</h2>
+      <p>Remember when there was one PC and everyone waited for their go? Send a friend the link to your game window and let them play on your machine while you watch.</p>
+      <p><b>Not shipped yet:</b> spectators, and passing control around between several guests. Today it is one guest at a time. Those are next.</p>
+    </div>
+  </div>
+
+  <section id="install">
+    <div class="wrap">
+      <hr class="rule">
+      <p class="kicker">Install</p>
+      <h2>Build it from source.</h2>
+      <div class="two">
+        <div>
+          <p>There are no downloads yet. You need Xcode's command line tools; the script builds the app and puts it in <code>~/Applications</code>.</p>
+          <div class="cmd has-copy">
+            <button type="button" data-copy="install-cmd" hidden>Copy</button>
+            <pre id="install-cmd">git clone https://github.com/inchidev/partyportal
+cd partyportal
+./scripts/build-app.sh
+open ~/Applications/PartyPortal.app</pre>
+          </div>
+          <p class="note">On first run macOS asks for two permissions: <b>Screen Recording</b>, to show the window, and <b>Accessibility</b>, so the guest's mouse and keyboard can reach it.</p>
+        </div>
+        <div>
+          <div class="status" style="margin-top:0; grid-template-columns:minmax(0,1fr)">
+            <div>
+              <dl>
+                <dt>Status</dt><dd><b>Early prototype</b></dd>
+                <dt>Host</dt><dd>macOS 14 or later. Tested on Apple Silicon.</dd>
+                <dt>Guest</dt><dd>A recent Chrome, Edge or Safari. Phones too.</dd>
+                <dt>License</dt><dd>MIT</dd>
+              </dl>
+            </div>
+            <div style="border-left:0; border-top:1.5px solid var(--ink)">
+              <h3>Known gaps</h3>
+              <ul>
+                <li>One guest at a time.</li>
+                <li>Menus and dialogs of the shared app are separate windows, so the guest cannot see them.</li>
+                <li>No Windows host yet.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/inchidev/partyportal">GitHub</a>
+    <a href="https://github.com/inchidev/partyportal/blob/main/LICENSE">MIT license</a>
+    <span class="push">Made by <a href="https://inchi.dev">inchi</a></span>
+  </div>
+</footer>
+
+<script>
+  // Copy buttons appear only when the clipboard is available; the page reads the same without them.
+  if (navigator.clipboard) document.querySelectorAll('button[data-copy]').forEach(b => {
+    b.hidden = false
+    b.onclick = () => navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent.replace(/\\\n\s*/g, '')).then(() => {
+      b.textContent = 'Copied'
+      setTimeout(() => { b.textContent = 'Copy' }, 1200)
+    })
+  })
+</script>
+</body>
+</html>

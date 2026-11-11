@@ -53,7 +53,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Files exist and links stay inside the site
+      - name: The page and everything it points to exist
         run: |
           test -f site/index.html
-          ! grep -RInE 'href="(file:|/Users/)' site
+          ! grep -RInE '(href|src)="(file:|/Users/)' site
+          # every local file referenced from the landing page is in the repository
+          grep -oE '(href|src)="[^"#:]+"' site/index.html | sed -E 's/^[a-z]+="//; s/"$//' | sort -u | while read -r ref; do
+            test -e "site/${ref#/}" || { echo "missing: $ref"; exit 1; }
+          done

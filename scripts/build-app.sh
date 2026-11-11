@@ -14,6 +14,18 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/partyportal" "$BIN/partyportal-testwin" "$APP/Contents/MacOS/"
 cp -R web "$APP/Contents/Resources/web"
+
+# App icon: every size macOS wants, from the one 1024 px source.
+ICON=site/assets/icon-1024.png
+if [ -f "$ICON" ]; then
+  SET="$(mktemp -d)/AppIcon.iconset"
+  mkdir -p "$SET"
+  for size in 16 32 128 256 512; do
+    sips -z $size $size "$ICON" --out "$SET/icon_${size}x${size}.png" > /dev/null
+    sips -z $((size * 2)) $((size * 2)) "$ICON" --out "$SET/icon_${size}x${size}@2x.png" > /dev/null
+  done
+  iconutil -c icns "$SET" -o "$APP/Contents/Resources/AppIcon.icns"
+fi
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,6 +35,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>dev.inchi.partyportal</string>
   <key>CFBundleName</key><string>PartyPortal</string>
   <key>CFBundleDisplayName</key><string>PartyPortal</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleVersion</key><string>1</string>
