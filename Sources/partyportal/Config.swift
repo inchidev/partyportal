@@ -41,9 +41,18 @@ struct VideoSettings: Codable, Equatable {
     var direct = true
 }
 
+/// Background mode: the guest works in the window while the host keeps using the Mac.
+struct BackgroundSettings: Codable, Equatable {
+    /// Address input to the app that owns the window instead of going through the host's pointer and focus.
+    var enabled = false
+    /// While shared, keep the window on a software-only monitor so nothing covers it and it keeps drawing.
+    var park = true
+}
+
 struct Settings: Codable {
     var locks = Locks()
     var video = VideoSettings()
+    var background = BackgroundSettings()
     var masksByApp: [String: [MaskRect]] = [:]
 }
 
@@ -76,10 +85,20 @@ extension VideoSettings {
     }
 }
 
+extension BackgroundSettings {
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? enabled
+        park = try c.decodeIfPresent(Bool.self, forKey: .park) ?? park
+    }
+}
+
 extension Settings {
     init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        background = try c.decodeIfPresent(BackgroundSettings.self, forKey: .background) ?? background
         locks = try c.decodeIfPresent(Locks.self, forKey: .locks) ?? locks
         video = try c.decodeIfPresent(VideoSettings.self, forKey: .video) ?? video
         masksByApp = try c.decodeIfPresent([String: [MaskRect]].self, forKey: .masksByApp) ?? masksByApp

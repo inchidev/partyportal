@@ -23,6 +23,8 @@ struct Options {
     var publicLink = false
     var viewOnly = false
     var printLink = false
+    /// Start in background mode (same as the switch in the host panel).
+    var background = false
 }
 
 final class Core {
@@ -69,6 +71,9 @@ final class Core {
     private var thumbs: [UInt32: (Double, Data)] = [:]
     private var awake: NSObjectProtocol?
     private var noNap: NSObjectProtocol?
+    private var virtualDisplay: VirtualDisplay?
+    private var parkedFrom: CGRect?
+    private var ownMoveUntil = 0.0
 
     // Direct connection (WebRTC through the bridge page in an invisible web view)
     private static let iceServers: [[String: Any]] = [["urls": ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"]]]
@@ -110,6 +115,7 @@ final class Core {
         webDir = Core.findWebDir(opts.webDir)
         audioOn = settings.video.audio
         liveKbps = settings.video.kbps
+        if opts.background { settings.background.enabled = true }
     }
 
     private var uptime: Double { ProcessInfo.processInfo.systemUptime }
@@ -201,6 +207,7 @@ final class Core {
     }
 
     func shutdown() {
+        unpark(wait: true)
         input?.releaseAll()
         tunnel.stop()
         source?.stop()
@@ -271,17 +278,7 @@ final class Core {
         lock.unlock()
         attach(src, generation: gen)
 
-        let backend: InputBackend
-        if opts.fake || opts.dryInput {
-            let path = opts.inputLog ?? (NSTemporaryDirectory() as NSString).appendingPathComponent("partyportal-input.log")
-            backend = DryInput(path: path)
-            realInput = nil
-        } else {
-            let real = RealInput(pid: info.pid, windowID: info.id)
-            backend = real
-            realInput = real
-        }
-        let ctl = InputController(backend: backend)
+        let ctl = InputController(backend: makeBackend(for: info))
         ctl.locks = { [unowned self] in self.settings.locks }
         ctl.zones = { [unowned self] in self.zones() }
         ctl.frame = { [unowned self] in self.windowFrame }
@@ -297,6 +294,7 @@ final class Core {
         refreshZones()
         publishMasks()
         printLinkIfReady()
+        if backgroundActive, settings.background.park { park(info) }
         addLog("info", "Sharing window “\(info.title.isEmpty ? info.app : info.title)”")
         sendState()
     }
@@ -354,8 +352,96 @@ final class Core {
         }
     }
 
+    /// Background mode applies to real windows with real input only.
+    private var backgroundActive: Bool { settings.background.enabled && !opts.fake && !opts.dryInput }
+
+    private func makeBackend(for info: WindowInfo) -> InputBackend {
+        if opts.fake || opts.dryInput {
+            realInput = nil
+            return DryInput(path: opts.inputLog ?? (NSTemporaryDirectory() as NSString).appendingPathComponent("partyportal-input.log"))
+        }
+        if settings.background.enabled {
+            let background = BackgroundInput(pid: info.pid, windowID: info.id)
+            background.frame = { [unowned self] in self.windowFrame }
+            realInput = nil
+            if !BackgroundInput.available { addLog("warn", "Background mode: this macOS lacks the calls needed for the mouse; only the keyboard will reach the window") }
+            return background
+        }
+        let real = RealInput(pid: info.pid, windowID: info.id)
+        realInput = real
+        return real
+    }
+
+    /// The host switched background mode or parking while a window is shared.
+    private func switchBackground() {
+        guard let info = target, let input, !opts.fake, !opts.dryInput else { return }
+        input.releaseAll()
+        input.backend = makeBackend(for: info)
+        if backgroundActive, settings.background.park {
+            if virtualDisplay == nil { park(info) }
+        } else {
+            unpark()
+        }
+        addLog("info", settings.background.enabled ? "Background mode on: your pointer and front app are left alone" : "Background mode off: the guest uses your pointer")
+        pauseReason = nil
+        sendState()
+    }
+
+    /// Move the shared window onto a monitor that exists only in software: nothing can cover it there,
+    /// so its app keeps drawing, and it is out of the host's way.
+    private func park(_ info: WindowInfo) {
+        guard AX.trusted, let window = AX.window(pid: info.pid, id: info.id) else { return addLog("warn", "Virtual display needs the Accessibility permission") }
+        // A window in full screen already lives on a Space of its own: it is not covered there, and it cannot be moved.
+        if AX.isFullScreen(window) { return addLog("info", "The window is in full screen on its own Space: left where it is") }
+        let wide = (max(Int(info.frame.width), 640) + 1) & ~1, high = (max(Int(info.frame.height) + 60, 480) + 1) & ~1
+        guard let display = VirtualDisplay(name: "PartyPortal", pointsWide: wide, pointsHigh: high) else { return addLog("warn", "Virtual display is not available: \(VirtualDisplay.lastFailure)") }
+        virtualDisplay = display
+        parkedFrom = info.frame
+        func place(_ attempt: Int) {
+            guard self.virtualDisplay === display, self.target?.id == info.id else { return }
+            let b = display.bounds
+            if CGDisplayIsActive(display.displayID) != 0, b.width > 0 {
+                display.moveOutOfTheWay()
+                let b = display.bounds
+                self.ownMoveUntil = self.uptime + 2
+                AX.setFrame(window, CGRect(x: b.minX, y: b.minY + 40, width: info.frame.width, height: info.frame.height))
+                self.addLog("info", "Window parked on a virtual display (\(Int(b.width))×\(Int(b.height)) at \(Int(b.minX)),\(Int(b.minY)))")
+            } else if attempt < 30 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { place(attempt + 1) }
+            } else {
+                self.addLog("warn", "Virtual display did not come up")
+            }
+        }
+        place(0)
+    }
+
+    /// Let the virtual monitor go and bring the window back to where it was.
+    /// The order matters: when a monitor disappears macOS re-fits the windows that were on it (a 960×628 window
+    /// came back as 286×188), so the old frame is restored only after that has happened.
+    private func unpark(wait: Bool = false) {
+        guard let display = virtualDisplay else { return }
+        let from = parkedFrom
+        let owner = target.map { ($0.pid, $0.id) }
+        parkedFrom = nil
+        virtualDisplay = nil
+        ownMoveUntil = uptime + 3
+        display.remove()
+        let restore = { [weak self] in
+            guard let from, let owner, AX.trusted, let window = AX.window(pid: owner.0, id: owner.1) else { return }
+            self?.ownMoveUntil = (self?.uptime ?? 0) + 2
+            AX.setFrame(window, from)
+        }
+        if wait {  // on the way out of the app there is no later
+            RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+            restore()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: restore)
+        }
+    }
+
     private func stopShare(note: String?) {
         guard target != nil else { return }
+        unpark()
         input?.releaseAll()
         input = nil
         realInput = nil
@@ -595,6 +681,11 @@ final class Core {
     /// Soft lock on the window's position and size: if it changed right after the guest acted, put it back.
     private func guardFrame(_ frame: CGRect, _ t: WindowInfo) {
         guard let locked = lockedFrame, frame != locked else { return }
+        // We are moving the window ourselves (to or from the virtual display): wherever it lands is its place.
+        if uptime < ownMoveUntil {
+            lockedFrame = frame
+            return
+        }
         let guestDriven = guest?.control == true && (input?.buttonHeld == true || uptime - lastGuestAction < 1.0)
         guard settings.locks.frameGuard, guestDriven, AX.trusted, let el = AX.window(pid: t.pid, id: t.id) else {
             lockedFrame = frame  // the host moved it: that is the new place
@@ -817,7 +908,8 @@ final class Core {
             "fake": opts.fake,
             "dryInput": opts.fake || opts.dryInput,
             "permissions": ["screen": CGPreflightScreenCaptureAccess(), "accessibility": AX.trusted],
-            "settings": ["locks": jsonObject(settings.locks), "video": jsonObject(settings.video)],
+            "settings": ["locks": jsonObject(settings.locks), "video": jsonObject(settings.video), "background": jsonObject(settings.background)],
+            "background": ["available": BackgroundInput.available, "parked": virtualDisplay != nil, "active": backgroundActive],
             "link": ["local": "http://127.0.0.1:\(opts.guestPort)/#t=\(token)", "public": orNull(tunnel.url.map { "\($0)/#t=\(token)" })],
             "tunnel": ["available": Tunnel.binary != nil, "running": tunnel.running, "url": orNull(tunnel.url), "error": orNull(tunnel.error)],
             "log": Array(log.suffix(80)),
@@ -963,6 +1055,10 @@ final class Core {
                 guest?.control = false
                 input?.releaseAll()
             }
+        }
+        if let b = decode(BackgroundSettings.self, from: body["background"]), b != settings.background {
+            settings.background = b
+            switchBackground()
         }
         if let v = decode(VideoSettings.self, from: body["video"]) {
             var video = v

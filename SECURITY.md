@@ -17,6 +17,13 @@ design protects against, what it does not, and how to report a problem.
 - **The link is the key.** The guest's token is 128 random bits in the URL fragment, which browsers do not send
   to servers. A connection without the right token gets no video. Kicking a guest rotates the token.
 
+## Background mode
+
+Background mode sends the guest's input straight to the app that owns the shared window and keeps that window on
+a virtual display. It uses private macOS interfaces (SkyLight event posting, `CGVirtualDisplay`) under the same
+Accessibility permission as normal mode. Nothing is loaded into the shared app and nothing in it is patched or
+hooked; that is a rule of the project, not just the current state. The same input rules apply in both modes.
+
 ## What it does not protect against
 
 - **Anything the shared app itself lets the guest do.** PartyPortal does not understand the app: allowed clicks

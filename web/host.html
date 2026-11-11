@@ -122,6 +122,13 @@
     </section>
 
     <section>
+      <h2>Background mode</h2>
+      <label class="check"><input type="checkbox" id="bgOn"><span><b>Let the guest work in the background</b> <span class="dim">— your pointer and the app you are using stay yours; the guest's clicks and keys go straight to the shared window</span></span></label>
+      <label class="check"><input type="checkbox" id="bgPark"><span>Keep the window on a virtual display while it is shared <span class="dim">— a window covered by others stops drawing; you get it back when sharing stops</span></span></label>
+      <p id="bgNote" class="dim"></p>
+    </section>
+
+    <section>
       <h2>Locks</h2>
       <label class="check"><input type="checkbox" data-lock="viewOnly"><span>View only <span class="dim">— the guest cannot click or type</span></span></label>
       <label class="check"><input type="checkbox" data-lock="keyboard"><span>Keyboard allowed</span></label>
@@ -227,6 +234,18 @@
       $('cmdMode').value = l.cmdMode
       $('shortcuts').hidden = l.cmdMode !== 'list'
       $('shortcuts').innerHTML = l.blockedShortcuts.map(x => `<span class="chip">${esc(pretty(x))}<button data-unblock="${esc(x)}" title="Allow">×</button></span>`).join('') || '<span class="dim">the list is empty</span>'
+    })
+    once('background', [s.settings.background, s.background, !!s.sharing, s.dryInput], () => {
+      const b = s.settings.background, live = s.background
+      $('bgOn').checked = b.enabled
+      $('bgPark').checked = b.park
+      $('bgPark').disabled = !b.enabled
+      $('bgOn').disabled = s.dryInput
+      $('bgNote').textContent = s.dryInput ? 'Not used in test mode.'
+        : !live.available ? 'This macOS lacks the system calls needed for the mouse: in background mode only the keyboard would reach the window.'
+        : !b.enabled ? 'Off: the guest uses your pointer, so the shared window has to be in front and you cannot use the Mac meanwhile.'
+        : live.parked ? 'On. The shared window is on a virtual display now; stop sharing to get it back.'
+        : 'On. Works with apps that take the mouse from the events they receive (most apps, browsers, some games). Apps that ask the system where the pointer is only get the guest\'s keyboard. Scrolling does not work yet.'
     })
     once('video', s.settings.video, () => {
       const v = s.settings.video
@@ -363,6 +382,8 @@
     const list = state.settings.locks.blockedShortcuts
     if (!list.includes(combo)) saveLocks({ blockedShortcuts: [...list, combo], cmdMode: 'list' })
   }, true)
+  const saveBackground = () => act('/api/settings', { background: { enabled: $('bgOn').checked, park: $('bgPark').checked } })
+  $('bgOn').onchange = $('bgPark').onchange = saveBackground
   const saveVideo = () => act('/api/settings', { video: { maxDim: +$('vDim').value, fps: +$('vFps').value, kbps: +$('vKbps').value, audio: $('vAudio').checked, direct: $('vDirect').checked } })
   $('vDim').onchange = $('vFps').onchange = $('vKbps').onchange = $('vAudio').onchange = $('vDirect').onchange = saveVideo
   $('refresh').onclick = () => loadWindows(true)

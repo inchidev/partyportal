@@ -87,7 +87,9 @@ final class WindowCapture: NSObject, FrameSource, SCStreamOutput, SCStreamDelega
     }
 
     func start(windowID: UInt32) async throws -> WindowInfo {
-        guard let w = try await Self.shareable().windows.first(where: { $0.windowID == windowID }) else {
+        // Look on every Space: a window in full screen lives on a Space of its own and is "off screen" from here.
+        let everywhere = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+        guard let w = everywhere.windows.first(where: { $0.windowID == windowID }) else {
             throw PortalError("Window not found: it may have been closed or minimized")
         }
         // Only this window: nothing above, below or beside it ever reaches the encoder.

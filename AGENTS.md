@@ -19,9 +19,11 @@ Sources/partyportal/
   Encoder.swift      VideoToolbox H.264, no B-frames, AVCC + avcC out
   Audio.swift        app audio → Opus, 20 ms packets, silence is not sent
   Server.swift       HTTP + WebSocket on Network.framework, no dependencies
-  Input.swift        InputController (rules, what is held) → RealInput (CGEvent) or DryInput (log)
+  Input.swift        InputController (rules, what is held) → RealInput (CGEvent), BackgroundInput (events addressed
+                     to the app, no pointer or focus involved) or DryInput (log)
   InputPolicy.swift  pure functions: shortcuts, zones; browser key → macOS key table
   AX.swift           Accessibility: window buttons, focus, frame, "what is under the pointer"
+  VirtualDisplay.swift  a software-only monitor (CGVirtualDisplay) the shared window is parked on in background mode
   Bridge.swift       the WebRTC peer: web/bridge.html in a 2×2 px WebKit window
   Tunnel.swift       cloudflared quick tunnel with its own empty config
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
@@ -49,6 +51,12 @@ back to the WebSocket.
 **Input.** Guest JSON (`m` move, `r` relative move, `d`/`u` button, `w` wheel, `k` key, `control`, `release`) →
 `Core.guestCommand` → `InputController.handle` → policy → backend. `RealInput.pauseReason` decides whether input
 may flow at all (accessibility, lock screen, window in front).
+
+**Background mode.** `settings.background` picks the backend: `BackgroundInput` posts events to the app's pid
+through SkyLight with the window id stamped on them, so nothing is paused by focus and `pauseReason` stays nil.
+If `park` is on, `Core.park` creates a `VirtualDisplay`, moves it so it touches the main screen at a corner only,
+and moves the window there with Accessibility; `unpark` reverses it. Both can be switched while sharing
+(`switchBackground`). A full-screen window is left on its own Space.
 
 **Threads.** Everything in Core runs on the main queue; frames on `videoQ`; the few values both touch are behind
 `Core.lock`. A `generation` counter makes frames from a stopped source harmless.
@@ -84,6 +92,15 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
   buffers are not modified. `hideRects` is set before the encoder exists.
 - **Clicks need a hit-test, not just coordinates.** Other windows, alerts and menus can sit over the shared window.
   Transparent full-display overlays of other apps are ignored; everything else in front blocks the click.
+- **Never reach into the shared app.** No injected libraries, no hooks, no patching, whatever it would fix. A shim
+  inside a game was tried (it did give the guest a pointer of their own) and was removed on principle.
+- **A background window spends its first click on becoming key.** `BackgroundInput` sends a key-window record and
+  a primer press just outside the window's corner first; without them the first click is lost.
+- **`CGEvent.postToPid` is not enough for the mouse.** Keys arrive, clicks do not; the SkyLight call does both.
+- **An init called through a C function pointer returns an owned object.** Declare it `Unmanaged` and take the
+  retained value, or the object leaks; that is how a virtual display once outlived the share that made it.
+- **Our own window moves are not the guest's.** Parking and unparking set `ownMoveUntil` so the frame guard does
+  not drag the window back to a display that no longer exists.
 - **The config must arrive before its keyframe.** That is why it travels on the video channel in direct mode.
 - **Browsers on macOS swallow key-up while ⌘ is held.** The host releases every held key when ⌘ goes up.
 - **stdout is for `--print-link` only.** The journal goes to stderr.
@@ -91,6 +108,7 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 
 ## Do not
 
+- Do not load code into, hook or patch the shared app. Input from outside and system-level arrangements only.
 - Do not add a dependency to the host without a very good reason.
 - Do not weaken a rule to make a test pass: a guest-facing check that cannot decide must refuse.
 - Do not put secrets, tokens or personal names in the repository, logs or examples.

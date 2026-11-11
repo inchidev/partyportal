@@ -79,6 +79,10 @@ enum AX {
         return (pid, id)
     }
 
+    static func isFullScreen(_ window: AXUIElement) -> Bool {
+        (copy(window, "AXFullScreen") as? Bool) ?? false
+    }
+
     static func unminimize(_ window: AXUIElement) {
         AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
     }
