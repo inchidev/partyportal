@@ -29,6 +29,13 @@ final class HostWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDe
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// A question to the host as a sheet on the panel's window (it does not stop the app the way a modal alert would).
+    func ask(_ alert: NSAlert, _ done: @escaping (Bool) -> Void) {
+        show()
+        guard let window else { return done(alert.runModal() == .alertFirstButtonReturn) }
+        alert.beginSheetModal(for: window) { done($0 == .alertFirstButtonReturn) }
+    }
+
     private func build() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()

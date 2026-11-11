@@ -25,16 +25,20 @@ struct Options {
     var printLink = false
     /// Force the input mode for this run: "background" or "takeover" (same as the choice in the host panel).
     var inputMode: String?
+    /// A portal on an L4 Server instead of the tunnel: its page (https://…/portal/<id>) and this Mac's key there.
+    /// The guest's key is `token`.
+    var portalURL: String?
+    var portalKey: String?
 }
 
 final class Core {
     private final class Guest {
-        let ws: WebSocket
+        let ws: GuestSocket
         let since = Date().timeIntervalSince1970
         var control = false
         /// What the guest's page says it shows, once a second.
         var fps = -1, late = 0, behind = 0, warned = false
-        init(ws: WebSocket) { self.ws = ws }
+        init(ws: GuestSocket) { self.ws = ws }
     }
 
     let opts: Options
@@ -44,6 +48,8 @@ final class Core {
     private var admin: HTTPServer!
     private var guestServer: HTTPServer!
     private let tunnel = Tunnel()
+    /// Portal mode: the guest's page and socket live on an L4 Server and this Mac dials out to it.
+    private var portal: PortalLink?
     private let videoQ = DispatchQueue(label: "partyportal.video", qos: .userInteractive)
 
     // Main queue
@@ -96,7 +102,7 @@ final class Core {
     // Shared with the video queue and the encoder's callback thread
     private let lock = NSLock()
     private var hideRects: [CGRect] = []
-    private var viewer: WebSocket?
+    private var viewer: GuestSocket?
     private var keyRequested = false
     private var statFrames = 0
     private var statBytes = 0
@@ -185,7 +191,7 @@ final class Core {
             server.onFail = { [unowned self] _ in
                 // Most likely PartyPortal is already running: show its panel instead of starting a second copy.
                 FileHandle.standardError.write(Data("Port \(server.port) is in use — PartyPortal seems to be running already.\n".utf8))
-                if self.opts.openPanel { self.wakeRunningCopy() }
+                if self.opts.openPanel || self.opts.portalURL != nil || self.pendingPortal != nil { self.wakeRunningCopy() }
                 exit(1)
             }
         }
@@ -196,7 +202,18 @@ final class Core {
             self.printLinkIfReady()
         }
         if opts.viewOnly { settings.locks.viewOnly = true }
-        if opts.publicLink { tunnel.start(port: opts.guestPort) }
+        if let page = opts.portalURL {
+            // Not before the ports are surely ours: a second copy that dialled the portal before finding them taken
+            // would push the running copy out of it (4409, final). A busy port exits within this delay.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if let error = self.usePortal(page: page, key: self.opts.portalKey ?? "", token: self.opts.token ?? "") {
+                    FileHandle.standardError.write(Data("--portal: \(error)\n".utf8))
+                    exit(2)
+                }
+            }
+        } else if opts.publicLink {
+            tunnel.start(port: opts.guestPort)
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [unowned self] _ in self.tick() }
         if let url = URL(string: "http://127.0.0.1:\(opts.adminPort)/bridge.html?k=\(bridgeSecret)") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.bridgeHost.start(url: url) }
@@ -219,6 +236,7 @@ final class Core {
         unpark(wait: true)
         input?.releaseAll()
         tunnel.stop()
+        portal?.stop()
         source?.stop()
     }
 
@@ -246,14 +264,24 @@ final class Core {
         }
     }
 
-    /// PartyPortal is already running (its ports are taken): ask that copy to show its window, then leave.
+    /// A portal this copy was asked to open (`partyportal://portal?…` or `--portal`) before it knew whether it
+    /// is the copy that keeps running. `ask`: it came from a link, so the host confirms it first.
+    var pendingPortal: (page: String, key: String, token: String, ask: Bool)?
+
+    /// PartyPortal is already running (its ports are taken): ask that copy to show its window — or to switch
+    /// to the portal this copy was given — then leave.
     private func wakeRunningCopy() {
-        guard let url = URL(string: "http://127.0.0.1:\(opts.adminPort)/api/show") else { return }
+        var path = "/api/show", body: [String: Any] = [:]
+        if let p = pendingPortal ?? opts.portalURL.map({ ($0, opts.portalKey ?? "", opts.token ?? "", false) }) {
+            path = "/api/portal"
+            body = ["url": p.0, "key": p.1, "t": p.2, "ask": p.3]
+        }
+        guard let url = URL(string: "http://127.0.0.1:\(opts.adminPort)\(path)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 1.5
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = Data("{}".utf8)
+        req.httpBody = (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
         let done = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { _, _, _ in done.signal() }.resume()
         _ = done.wait(timeout: .now() + 2)
@@ -386,10 +414,13 @@ final class Core {
     /// `--print-link`: one JSON line on stdout as soon as there is a window to show and a link to give out.
     private func printLinkIfReady() {
         guard opts.printLink, !linkPrinted, let t = target else { return }
-        if opts.publicLink, tunnel.url == nil { return }
+        if portal == nil {
+            if opts.portalURL != nil { return }  // the portal starts a moment after launch
+            if opts.publicLink, tunnel.url == nil { return }
+        }
         linkPrinted = true
         var line: [String: Any] = ["type": "link", "window": t.title.isEmpty ? t.app : t.title, "local": "http://127.0.0.1:\(opts.guestPort)/#t=\(token)"]
-        if let url = tunnel.url { line["url"] = "\(url)/#t=\(token)" }
+        if let url = publicLink { line["url"] = url }
         if let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys, .withoutEscapingSlashes]) {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
@@ -781,7 +812,7 @@ final class Core {
         return diff == 0
     }
 
-    private func guestOpened(_ ws: WebSocket) {
+    private func guestOpened(_ ws: GuestSocket) {
         ws.onText = { [weak self, weak ws] text in
             guard let self, let ws else { return }
             self.guestMessage(ws, text)
@@ -817,7 +848,7 @@ final class Core {
         addLog("info", note)
     }
 
-    private func guestMessage(_ ws: WebSocket, _ text: String) {
+    private func guestMessage(_ ws: GuestSocket, _ text: String) {
         guard let m = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any], let type = m["t"] as? String else { return }
         guard let g = guest, g.ws === ws else {
             guard type == "auth", let candidate = m["token"] as? String, tokenMatches(candidate) else {
@@ -1023,7 +1054,7 @@ final class Core {
                 "available": BackgroundInput.available, "parked": virtualDisplay != nil, "active": backgroundActive,
                 "engine": orNull(target == nil ? nil : pointerPollingEngine),
             ],
-            "link": ["local": "http://127.0.0.1:\(opts.guestPort)/#t=\(token)", "public": orNull(tunnel.url.map { "\($0)/#t=\(token)" })],
+            "link": ["local": "http://127.0.0.1:\(opts.guestPort)/#t=\(token)", "public": orNull(publicLink)],
             "tunnel": ["available": Tunnel.binary != nil, "running": tunnel.running, "url": orNull(tunnel.url), "error": orNull(tunnel.error)],
             "log": Array(log.suffix(80)),
             "testwin": testwinPath != nil,
@@ -1040,7 +1071,66 @@ final class Core {
         s["turn"] = turn.configured
         s["bridge"] = bridgeWS != nil
         s["bridgeDiag"] = bridgeDiag
+        s["portal"] = portal.map { ["page": $0.page.absoluteString, "status": $0.status.rawValue, "error": orNull($0.error)] as [String: Any] } ?? NSNull()
         return s
+    }
+
+    /// The link a guest outside this Mac uses: the portal's page, or the tunnel's address.
+    private var publicLink: String? {
+        if let portal { return portal.guestLink(token: token) }
+        return tunnel.url.map { "\($0)/#t=\(token)" }
+    }
+
+    // MARK: Portal
+
+    /// Switch to a portal on an L4 Server: the tunnel goes, this Mac dials out, and the guest's key becomes `token`
+    /// (the portal checks it too). Returns what is wrong, or nil.
+    @discardableResult
+    func usePortal(page: String, key: String, token guestKey: String) -> String? {
+        guard !guestKey.isEmpty, guestKey.count <= 512 else { return "the guest's key (--token / t) is missing" }
+        // Only a key the guest page can read back from its link (#t=…).
+        guard guestKey.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+            return "the guest's key may only hold letters, digits, - and _"
+        }
+        if let current = portal, current.same(page: page, key: key), guestKey == token { return nil }
+        guard key.count <= 512, let link = PortalLink(page: page, key: key) else {
+            return "needs an https address of the portal's page and this Mac's key"
+        }
+        tunnel.stop()
+        portal?.stop()
+        portal = link
+        if token != guestKey {
+            token = guestKey
+            linkPrinted = false
+        }
+        link.log = { [weak self] kind, text in self?.addLog(kind, text) }
+        link.onGuest = { [weak self] ws in self?.guestOpened(ws) }
+        link.onChange = { [weak self] in self?.printLinkIfReady() }
+        link.start()
+        addLog("info", "Portal: \(link.page.absoluteString) — connecting")
+        printLinkIfReady()
+        return nil
+    }
+
+    func leavePortal() {
+        guard let link = portal else { return }
+        link.stop()
+        portal = nil
+        addLog("info", "Portal closed: the guest's link no longer reaches this Mac")
+    }
+
+    /// Set by the app: asks the host before a link from outside (partyportal://portal?…) switches the portal.
+    var confirmPortal: ((URL, @escaping (Bool) -> Void) -> Void)?
+
+    /// A portal handed over from a link or a second copy. `ask`: the host confirms it first.
+    func requestPortal(page: String, key: String, token guestKey: String, ask: Bool, done: @escaping (String?) -> Void) {
+        guard let (pageURL, _) = PortalLink.addresses(page: page), !key.isEmpty, !guestKey.isEmpty else { return done("Not a portal address with both keys") }
+        guard ask else { return done(usePortal(page: page, key: key, token: guestKey)) }
+        guard let confirm = confirmPortal else { return done("Nobody here to confirm the portal") }
+        confirm(pageURL) { [weak self] ok in
+            guard let self, ok else { return done("The host said no") }
+            done(self.usePortal(page: page, key: key, token: guestKey))
+        }
     }
 
     private var testwinPath: String? {
@@ -1110,17 +1200,44 @@ final class Core {
                 g.ws.close(code: 4002)
                 dropGuest(note: "Guest removed by the host, link replaced")
             }
-            token = Core.newToken()
+            // A portal's guest key is set by the portal: the link stays, only this guest goes.
+            if portal == nil { token = Core.newToken() }
             reply(.json(stateJSON()))
 
         case ("POST", "/api/token"):
+            if portal != nil { return reply(.fail(409, "The portal sets the link: make a new portal to replace it")) }
             token = Core.newToken()
             addLog("info", "Link replaced: the old one no longer works")
             reply(.json(stateJSON()))
 
         case ("POST", "/api/tunnel"):
-            if (body["on"] as? Bool) ?? false { tunnel.start(port: opts.guestPort) } else { tunnel.stop() }
+            let on = (body["on"] as? Bool) ?? false
+            if on, portal != nil { return reply(.fail(409, "The guest's link comes from the portal: leave it first")) }
+            if on { tunnel.start(port: opts.guestPort) } else { tunnel.stop() }
             reply(.json(stateJSON()))
+
+        // A portal on an L4 Server: {url, key, t} switches to it (from a second copy or a link), {off: true} leaves it.
+        case ("POST", "/api/portal"):
+            if (body["off"] as? Bool) == true {
+                leavePortal()
+                return reply(.json(stateJSON()))
+            }
+            // From a link (`ask`, the default) the host confirms first: answer now, switch when they say yes.
+            let ask = (body["ask"] as? Bool) ?? true
+            var answered = false
+            requestPortal(page: body["url"] as? String ?? "", key: body["key"] as? String ?? "", token: body["t"] as? String ?? "", ask: ask) { [weak self] error in
+                guard let self else { return }
+                if let error { self.addLog("warn", "Portal not opened: \(error)") }
+                guard !answered else { return }
+                answered = true
+                if let error { return reply(.fail(400, error)) }
+                self.openPanel()
+                reply(.json(self.stateJSON()))
+            }
+            if ask, !answered {
+                answered = true
+                reply(.json(["asked": true]))
+            }
 
         case ("POST", "/api/permission"):
             let kind = body["kind"] as? String
