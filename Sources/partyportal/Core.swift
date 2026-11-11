@@ -29,6 +29,8 @@ struct Options {
     /// The guest's key is `token`.
     var portalURL: String?
     var portalKey: String?
+    /// Where a portal is opened when there is no Server of your own (POST <origin>/api/portals, no account).
+    var rendezvous = "https://llll.gg"
 }
 
 final class Core {
@@ -86,6 +88,11 @@ final class Core {
     // Direct connection (WebRTC through the bridge page in an invisible web view)
     private let turn: TurnRelay
     private var turnWarned = false
+    /// The portal came from the rendezvous (llll.gg): when it ends, "Open public access" makes a new one.
+    private var portalFromRendezvous = false
+    private var portalExpires: Double?
+    private var rendezvousBusy = false
+    private var rendezvousError: String?
     private let bridgeHost = BridgeHost()
     private let bridgeSecret = Core.newToken()
     private var bridgeWS: WebSocket?
@@ -212,7 +219,7 @@ final class Core {
                 }
             }
         } else if opts.publicLink {
-            tunnel.start(port: opts.guestPort)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.openPublicLink { _ in } }  // after the ports are ours, as above
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [unowned self] _ in self.tick() }
         if let url = URL(string: "http://127.0.0.1:\(opts.adminPort)/bridge.html?k=\(bridgeSecret)") {
@@ -870,8 +877,13 @@ final class Core {
             sendState()
             kickVideo()
             // The invitation to connect directly waits for the relay credential (a moment, a few seconds at worst);
-            // video already flows over this socket meanwhile.
+            // video already flows over this socket meanwhile. A portal that handed out its own servers needs no wait.
             let invited = guest
+            if let servers = iceOverride {
+                let direct = bridgeWS != nil && settings.video.direct
+                ws.send(json: ["type": "hello", "rtc": direct ? ["iceServers": servers] as [String: Any] : NSNull() as Any])
+                return
+            }
             turn.servers { [weak self] servers, relay in
                 guard let self, let g = self.guest, g === invited else { return }
                 if self.turn.configured, !relay, !self.turnWarned {
@@ -887,7 +899,7 @@ final class Core {
         case "rtc-offer":
             guard let sdp = m["sdp"] as? String, sdp.count < 20000, settings.video.direct, let bridge = bridgeWS else { return }
             rtcDown(note: nil)
-            bridge.send(json: ["s": "offer", "sdp": sdp, "ice": turn.current])
+            bridge.send(json: ["s": "offer", "sdp": sdp, "ice": iceServers])
         case "rtc-cand":
             if let c = m["c"] as? [String: Any] { bridgeWS?.send(json: ["s": "cand", "c": c]) }
         case "rtc-off":
@@ -926,7 +938,7 @@ final class Core {
     private func bridgeOpened(_ ws: WebSocket) {
         bridgeWS = ws
         // A guest who connected before the bridge was ready (or while it was reloading) gets the invitation now.
-        if settings.video.direct { guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": turn.current]]) }
+        if settings.video.direct { guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": iceServers]]) }
         ws.onText = { [weak self, weak ws] text in
             guard let self, let ws, self.bridgeWS === ws else { return }
             self.bridgeMessage(text)
@@ -1071,8 +1083,86 @@ final class Core {
         s["turn"] = turn.configured
         s["bridge"] = bridgeWS != nil
         s["bridgeDiag"] = bridgeDiag
-        s["portal"] = portal.map { ["page": $0.page.absoluteString, "status": $0.status.rawValue, "error": orNull($0.error)] as [String: Any] } ?? NSNull()
+        s["portal"] = portal.map {
+            ["page": $0.page.absoluteString, "status": $0.status.rawValue, "error": orNull($0.error), "rendezvous": portalFromRendezvous,
+             "expiresAt": portalExpires ?? NSNull(), "relay": $0.iceServers?.contains { $0["credential"] != nil } == true] as [String: Any]
+        } ?? NSNull()
+        s["share"] = ["via": settings.publicLinkMode, "rendezvous": URL(string: opts.rendezvous)?.host ?? opts.rendezvous,
+                      "busy": rendezvousBusy, "error": orNull(rendezvousError)]
         return s
+    }
+
+    /// ICE servers a connected portal handed out (`pp.ready`); they replace TurnRelay's while that connection lasts.
+    private var iceOverride: [[String: Any]]? {
+        if ProcessInfo.processInfo.environment["PP_ICE"] == "local" { return nil }
+        return portal?.iceServers
+    }
+
+    /// What the bridge and the guest use right now, without waiting.
+    private var iceServers: [[String: Any]] { iceOverride ?? turn.current }
+
+    /// "Open public access": a portal on the rendezvous (llll.gg) or the tunnel, as the host chose.
+    private func openPublicLink(_ done: @escaping (String?) -> Void) {
+        if let p = portal {
+            guard p.status == .stopped else { return done("The guest's link comes from the portal: leave it first") }
+            leavePortal()
+        }
+        guard settings.publicLinkMode == "rendezvous" else {
+            tunnel.start(port: opts.guestPort)
+            return done(nil)
+        }
+        openRendezvous(done)
+    }
+
+    /// No Server of your own: ask the rendezvous for a portal (POST <origin>/api/portals, no account, no body) and
+    /// join it as a `partyportal://` link would, without asking — the host started it.
+    private func openRendezvous(_ done: @escaping (String?) -> Void) {
+        guard !rendezvousBusy else { return done(nil) }
+        guard let origin = PortalLink.addresses(page: opts.rendezvous + "/x")?.page.deletingLastPathComponent(),
+              let url = URL(string: "api/portals", relativeTo: origin)?.absoluteURL else {
+            return done("--rendezvous needs an https origin")
+        }
+        rendezvousBusy = true
+        rendezvousError = nil
+        tunnel.stop()
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        addLog("info", "Opening a portal on \(origin.host ?? "the rendezvous")…")
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            DispatchQueue.main.async {
+                self.rendezvousBusy = false
+                let result = self.joinRendezvous(origin: origin, status: status, json: json, error: error)
+                if let result { self.rendezvousError = result; self.addLog("warn", "No portal: \(result)") }
+                done(result)
+            }
+        }.resume()
+    }
+
+    private func joinRendezvous(origin: URL, status: Int, json: [String: Any]?, error: Error?) -> String? {
+        if let error { return error.localizedDescription }
+        guard (200..<300).contains(status), let json else {
+            if status == 429 { return "\(origin.host ?? "The rendezvous") has opened enough portals for this network for now: try again later" }
+            return (json?["error"] as? String).map { String($0.prefix(200)) } ?? "\(origin.host ?? "The rendezvous") answered \(status)"
+        }
+        guard let hostLink = json["hostLink"] as? String, let items = URLComponents(string: hostLink)?.queryItems else { return "The answer had no host link" }
+        let q = Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
+        let page = q["url"] ?? (json["url"] as? String ?? "")
+        // The portal must live on the rendezvous itself (or under it): an answer cannot send this Mac elsewhere.
+        guard let pageHost = PortalLink.addresses(page: page)?.page.host?.lowercased(), let originHost = origin.host?.lowercased(),
+              pageHost == originHost || pageHost.hasSuffix("." + originHost) else { return "The portal is not on \(origin.host ?? "the rendezvous")" }
+        if let error = usePortal(page: page, key: q["key"] ?? "", token: q["t"] ?? "") { return error }
+        portalFromRendezvous = true
+        if let at = json["expiresAt"] as? Double { portalExpires = at > 1e11 ? at / 1000 : at }
+        else if let at = json["expiresAt"] as? String {
+            let iso = ISO8601DateFormatter(), precise = ISO8601DateFormatter()
+            precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            portalExpires = (precise.date(from: at) ?? iso.date(from: at))?.timeIntervalSince1970
+        }
+        return nil
     }
 
     /// The link a guest outside this Mac uses: the portal's page, or the tunnel's address.
@@ -1099,6 +1189,8 @@ final class Core {
         tunnel.stop()
         portal?.stop()
         portal = link
+        portalFromRendezvous = false
+        portalExpires = nil
         if token != guestKey {
             token = guestKey
             linkPrinted = false
@@ -1116,6 +1208,8 @@ final class Core {
         guard let link = portal else { return }
         link.stop()
         portal = nil
+        portalFromRendezvous = false
+        portalExpires = nil
         addLog("info", "Portal closed: the guest's link no longer reaches this Mac")
     }
 
@@ -1211,10 +1305,17 @@ final class Core {
             reply(.json(stateJSON()))
 
         case ("POST", "/api/tunnel"):
-            let on = (body["on"] as? Bool) ?? false
-            if on, portal != nil { return reply(.fail(409, "The guest's link comes from the portal: leave it first")) }
-            if on { tunnel.start(port: opts.guestPort) } else { tunnel.stop() }
-            reply(.json(stateJSON()))
+            // "Open public access" (on) and "Close public access" (off), whichever way the link is made.
+            if (body["on"] as? Bool) ?? false {
+                openPublicLink { [weak self] error in
+                    guard let self else { return }
+                    reply(error.map { .fail(409, $0) } ?? .json(self.stateJSON()))
+                }
+            } else {
+                tunnel.stop()
+                if portalFromRendezvous { leavePortal() }
+                reply(.json(stateJSON()))
+            }
 
         // A portal on an L4 Server: {url, key, t} switches to it (from a second copy or a link), {off: true} leaves it.
         case ("POST", "/api/portal"):
@@ -1314,8 +1415,12 @@ final class Core {
                 rtcDown(note: "Direct connection turned off by the host")
                 bridgeWS?.send(json: ["s": "reset"])
             } else if !wasDirect, video.direct, bridgeWS != nil {
-                guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": turn.current]])  // invite the guest to try again
+                guest?.ws.send(json: ["type": "hello", "rtc": ["iceServers": iceServers]])  // invite the guest to try again
             }
+        }
+        if let via = (body["share"] as? [String: Any])?["via"] as? String, Settings.publicLinkModes.contains(via) {
+            settings.publicLink = via
+            rendezvousError = nil
         }
         if let list = decode([MaskRect].self, from: body["masks"]), let t = target {
             settings.masksByApp[t.appKey] = list.prefix(50).map { m in

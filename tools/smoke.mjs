@@ -18,6 +18,8 @@ function attempt(tok, label) {
         const m = JSON.parse(e.data)
         seen.texts.push(m.type || m.t)
         if (m.type === 'video') seen.config = `${m.codec} ${m.width}x${m.height}`
+        // The ICE servers the guest is told to use: the host's (TURN key or STUN), or a portal's from pp.ready.
+        if (m.type === 'hello') seen.ice = m.rtc ? JSON.stringify(m.rtc.iceServers) : 'no direct connection offered'
       } else {
         seen.binary++
         const v = new DataView(e.data)

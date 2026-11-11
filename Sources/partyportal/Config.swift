@@ -56,6 +56,14 @@ struct Settings: Codable {
     var video = VideoSettings()
     var background = BackgroundSettings()
     var masksByApp: [String: [MaskRect]] = [:]
+    /// How a public link is made: "rendezvous" (a portal opened on llll.gg, no Server of your own) or "tunnel"
+    /// (cloudflared). nil until the host picks one: `Settings.defaultPublicLink` then.
+    var publicLink: String?
+
+    static let publicLinkModes = ["rendezvous", "tunnel"]
+    /// The tunnel until llll.gg's portals are live.
+    static let defaultPublicLink = "tunnel"
+    var publicLinkMode: String { publicLink ?? Settings.defaultPublicLink }
 }
 
 // Tolerant decoding: a config written by an older build (or a panel that sends fewer fields) keeps
@@ -104,6 +112,7 @@ extension Settings {
         locks = try c.decodeIfPresent(Locks.self, forKey: .locks) ?? locks
         video = try c.decodeIfPresent(VideoSettings.self, forKey: .video) ?? video
         masksByApp = try c.decodeIfPresent([String: [MaskRect]].self, forKey: .masksByApp) ?? masksByApp
+        if let mode = try c.decodeIfPresent(String.self, forKey: .publicLink), Settings.publicLinkModes.contains(mode) { publicLink = mode }
     }
 }
 

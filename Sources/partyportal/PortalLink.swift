@@ -2,11 +2,12 @@
 //
 // Relay protocol v1, the host's side (wss://<origin>/portal/<id>/host):
 //   → {"t":"host","key":<hostKey>,"v":1}            once, when the socket opens
-//   ← {"t":"pp.ready"}                              the portal accepted us
+//   ← {"t":"pp.ready"[,"iceServers":[…]]}           the portal accepted us; it may hand out ICE servers (its TURN)
 //   ← {"t":"pp.guest","open":true|false}            a guest authenticated / that guest left
 //   ↔ anything else, text or binary                 the guest's own frames, verbatim, both ways
 //   → "ping" every 20 s, ← "pong"                   keepalive, answered by the Server itself
-// Close 4401 (bad key), 4404 (portal ended) and 4409 (another host took over) are final; anything else is
+// Close 4401 (bad key), 4404 (portal ended), 4409 (another host took over), 4426 (protocol version) and 4429
+// (llll.gg: the portal's relay limit) are final; anything else is
 // retried with backoff (1 s, doubling, at most 30 s) and counts as the guest leaving.
 //
 // Core sees a relayed guest exactly like a local one (`GuestSocket`): it checks the token in the first frame,
@@ -47,7 +48,32 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         4401: "The portal refused this Mac's key",
         4404: "The portal has ended",
         4409: "Another PartyPortal connected to this portal",
+        4426: "Update PartyPortal or this Server: they do not speak the same protocol",
+        4429: "This portal reached its relay limit",
     ]
+
+    /// ICE servers the portal handed out in `pp.ready` (usually with its TURN relay), for as long as this host
+    /// connection lasts. nil: the portal gave none, and Core uses its own (TurnRelay).
+    private(set) var iceServers: [[String: Any]]?
+
+    /// Only what a browser's RTCPeerConnection takes, and nothing a Server should not send: stun/turn/turns URLs,
+    /// string credentials, a handful of entries. Port 53 is dropped as TurnRelay does (browsers block it).
+    static func cleanIceServers(_ raw: Any?) -> [[String: Any]]? {
+        guard let list = raw as? [[String: Any]] else { return nil }
+        let cleaned: [[String: Any]] = list.prefix(8).compactMap { server in
+            let urls = (server["urls"] as? [String] ?? (server["urls"] as? String).map { [$0] } ?? []).filter { url in
+                let u = url.lowercased()
+                return url.count < 512 && ["stun:", "turn:", "turns:"].contains { u.hasPrefix($0) } && !u.contains(":53?") && !u.hasSuffix(":53")
+            }
+            guard !urls.isEmpty else { return nil }
+            var out: [String: Any] = ["urls": Array(urls.prefix(8))]
+            for field in ["username", "credential"] {
+                if let v = server[field] as? String, v.count < 1024 { out[field] = v } else if server[field] != nil { return nil }
+            }
+            return out
+        }
+        return cleaned.isEmpty ? nil : cleaned
+    }
 
     /// The portal's page and the host socket next to it. `page` must be https; plain http is accepted only for
     /// this Mac (a local stand-in such as tools/portal-relay.mjs).
@@ -111,6 +137,7 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         pinger = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        iceServers = nil
         guestLeft()
         set(.stopped, error)
         session.invalidateAndCancel()
@@ -195,8 +222,10 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
         switch type {
         case "pp.ready":
             backoff = 1
+            iceServers = Self.cleanIceServers(m["iceServers"])
             set(.ready, nil)
-            log("info", "Connected to the portal: \(page.absoluteString)")
+            let relay = iceServers?.contains { $0["credential"] != nil } == true
+            log("info", "Connected to the portal: \(page.absoluteString)" + (relay ? " (its TURN relay is offered to the guest)" : ""))
         case "pp.guest":
             // One guest at a time: whatever was there before is gone either way.
             guestLeft()
@@ -220,8 +249,12 @@ final class PortalLink: NSObject, URLSessionWebSocketDelegate {
     private func ended(_ t: URLSessionWebSocketTask, code: Int, why: String? = nil) {
         guard t === task, !stopped else { return }
         task = nil
+        iceServers = nil
         t.cancel()
         guestLeft()
+        // No WebSocket at all, and the Server says the portal is not there: it ended (or never was).
+        var code = code
+        if code == 0, let status = (t.response as? HTTPURLResponse)?.statusCode, [404, 410].contains(status) { code = 4404 }
         if let final = Self.finalCodes[code] {
             log("warn", "\(final) — the portal link is off")
             stopped = true
@@ -278,7 +311,14 @@ final class RelayedGuest: GuestSocket {
     }
 
     func send(text: String) { enqueue(.string(text), size: text.utf8.count, binary: false) }
-    func send(binary: Data) { enqueue(.data(binary), size: binary.count, binary: true) }
+    func send(binary: Data) {
+        // A Worker's WebSocket takes messages up to 1 MiB, and llll.gg ends the portal for a bigger one (4429).
+        // A frame that large is dropped here; the guest's decoder then asks for a keyframe.
+        guard binary.count <= Self.maxMessage else { return }
+        enqueue(.data(binary), size: binary.count, binary: true)
+    }
+
+    static let maxMessage = 1024 * 1024 - 64
 
     private func enqueue(_ message: URLSessionWebSocketTask.Message, size: Int, binary: Bool) {
         lock.lock()

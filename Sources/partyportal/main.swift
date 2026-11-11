@@ -12,6 +12,9 @@
 //                              no tunnel: the guest's page lives on a portal (an L4 Server, https://…/portal/<id>), this
 //                              Mac dials out to it with key K, and the guest's link is URL#t=T
 //   partyportal://portal?url=<portal page>&key=<host key>&t=<guest key>   the same, from a link (the host confirms)
+//   --rendezvous ORIGIN        where a portal is opened when there is no Server of your own (default https://llll.gg):
+//                              POST ORIGIN/api/portals, then joined like a link. Used when the panel's public link is
+//                              set to go "through llll.gg"
 //   --view-only                the guest can watch but not touch
 //   --background / --takeover  how the guest's input arrives: addressed to the app (the default), or through
 //                              your pointer (works in every app, but the window must be in front)
@@ -90,13 +93,17 @@ while !args.isEmpty {
     case "--token": opts.token = value(flag)
     case "--portal": opts.portalURL = value(flag)
     case "--portal-key": opts.portalKey = value(flag)
+    case "--rendezvous":
+        var origin = value(flag)
+        while origin.hasSuffix("/") { origin.removeLast() }
+        opts.rendezvous = origin
     case "--config": opts.configPath = value(flag)
     case "--input-log": opts.inputLog = value(flag)
     case "--window": opts.autoWindow = value(flag)
     case "--web": opts.webDir = value(flag)
     case "--check": check(value(flag))
     case "-h", "--help":
-        print("partyportal [--fake] [--dry-input] [--window NAME] [--admin-port N] [--guest-port N] [--token T] [--portal URL --portal-key KEY] [--config FILE] [--input-log FILE] [--web DIR] [--no-open]")
+        print("partyportal [--fake] [--dry-input] [--window NAME] [--admin-port N] [--guest-port N] [--token T] [--portal URL --portal-key KEY] [--rendezvous ORIGIN] [--config FILE] [--input-log FILE] [--web DIR] [--no-open]")
         exit(0)
     default:
         if flag.hasPrefix("-psn") { continue }  // Finder adds this when launching an .app
