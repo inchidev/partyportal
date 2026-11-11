@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tests
+        run: swift test
+
+      - name: Build the app
+        run: PP_INSTALL_DIR="$PWD/dist" ./scripts/build-app.sh
+
+      - name: Package
+        run: |
+          cd dist
+          ditto -c -k --keepParent PartyPortal.app "PartyPortal-${GITHUB_REF_NAME}-macos.zip"
+          shasum -a 256 "PartyPortal-${GITHUB_REF_NAME}-macos.zip" > "PartyPortal-${GITHUB_REF_NAME}-macos.zip.sha256"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          This build is not notarised yet. After unzipping, move `PartyPortal.app` to `~/Applications` and run:
+
+          ```bash
+          xattr -dr com.apple.quarantine ~/Applications/PartyPortal.app
+          ```
+
+          Or build it yourself: `./scripts/build-app.sh`.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes

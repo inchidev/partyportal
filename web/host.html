@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PartyPortal — host panel</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f4f6f9; --card: #fff; --line: #dfe4ea; --text: #15202b; --dim: #66758a; --accent: #1677e5; --ok: #1a9c61; --warn: #b7791f; --bad: #d63b3b; --chip: #eef2f6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0d1116; --card: #161c24; --line: #263040; --text: #e6ebf2; --dim: #8b97a8; --accent: #3d9bff; --ok: #3ecf8e; --warn: #f5a623; --bad: #ff6b6b; --chip: #1f2833; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .grow { flex: 1; }
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .col { display: grid; gap: 16px; min-width: 0; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+  h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); font-weight: 600; }
+  p { margin: 6px 0; }
+  .dim { color: var(--dim); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; color: var(--text); background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { filter: brightness(1.06); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+  button.small { padding: 2px 8px; font-size: 13px; }
+  input[type=text], select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; min-width: 0; }
+  label.check { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; cursor: pointer; }
+  label.check input { margin-top: 3px; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12.5px; font-weight: 600; background: var(--chip); }
+  .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
+  .banner { grid-column: 1 / -1; background: color-mix(in srgb, var(--warn) 14%, var(--card)); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+  #windows { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+  .win { border: 1px solid var(--line); border-radius: 10px; padding: 8px; cursor: pointer; background: var(--bg); text-align: left; display: block; width: 100%; }
+  .win:hover { border-color: var(--accent); }
+  .win img { width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #0003; border-radius: 6px; display: block; }
+  .win b, .win span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win span { color: var(--dim); font-size: 12.5px; }
+  #stage { position: relative; user-select: none; background: #000; border-radius: 8px; overflow: hidden; line-height: 0; touch-action: none; }
+  #stage img { width: 100%; display: block; pointer-events: none; min-height: 120px; }
+  #overlay { position: absolute; inset: 0; cursor: crosshair; }
+  .mask { position: absolute; border: 2px solid #fff9; cursor: move; line-height: 1.2; }
+  .mask.hide { background: repeating-linear-gradient(45deg, #000c 0 8px, #222c 8px 16px); }
+  .mask.block { border: 2px dashed #ff5d5d; }
+  .mask.hide.block { border-style: solid; border-color: #ff5d5d; }
+  .mask.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .mask i { position: absolute; left: 4px; top: 3px; font-style: normal; font-size: 11.5px; color: #fff; text-shadow: 0 1px 2px #000; white-space: nowrap; pointer-events: none; }
+  .mask u { position: absolute; right: -6px; bottom: -6px; width: 14px; height: 14px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; cursor: nwse-resize; }
+  .zone { position: absolute; border: 1px dashed #f5a623; background: #f5a62322; pointer-events: none; }
+  .maskrow { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  .maskrow.sel { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .maskrow label { display: flex; gap: 5px; align-items: center; white-space: nowrap; cursor: pointer; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chip { background: var(--chip); border: 1px solid var(--line); border-radius: 7px; padding: 2px 4px 2px 9px; font-variant-numeric: tabular-nums; display: inline-flex; gap: 4px; align-items: center; }
+  .chip button { border: 0; background: none; padding: 0 5px; color: var(--dim); }
+  .link { display: flex; gap: 6px; margin: 6px 0; }
+  .link input { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  #log { max-height: 260px; overflow: auto; font-size: 13px; }
+  #log div { padding: 3px 0; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+  #log time { color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+  #log .block { color: var(--bad); } #log .warn { color: var(--warn); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PartyPortal</h1><span class="dim">host panel</span>
+  <span class="grow"></span>
+  <span id="headGuest" class="pill">no guest</span>
+  <button id="stopAll" class="danger" hidden>Stop sharing</button>
+</header>
+<main>
+  <section id="modeBanner" class="banner" hidden></section>
+  <section id="permBanner" class="banner" hidden>
+    <h2>macOS permissions needed</h2>
+    <div id="perms"></div>
+    <p class="dim">After you grant Screen Recording, macOS will ask to restart PartyPortal — let it.</p>
+  </section>
+
+  <div class="col">
+    <section id="pickCard">
+      <h2>Pick a window to share</h2>
+      <div class="row" style="margin-bottom:10px">
+        <button id="refresh">Refresh list</button>
+        <button id="testwin" hidden>Open test window</button>
+        <span id="pickNote" class="dim"></span>
+      </div>
+      <div id="windows"></div>
+    </section>
+
+    <section id="shareCard" hidden>
+      <h2>What the guest sees</h2>
+      <div class="row" style="margin-bottom:10px">
+        <b id="shareTitle"></b><span id="shareStats" class="dim"></span><span class="grow" style="flex:1"></span>
+        <button id="focus">Bring window to front</button>
+        <button id="change">Another window</button>
+      </div>
+      <div id="stage"><img id="preview" alt=""><div id="overlay"></div></div>
+      <p class="dim">Drag on the picture to draw a mask. A mask can be moved, and resized by its round handle. Yellow dashes mark places the guest cannot click because of the general locks.</p>
+      <div id="masklist"></div>
+    </section>
+
+    <section>
+      <h2>Journal</h2>
+      <div id="log"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section>
+      <h2>Guest</h2>
+      <p id="guestLine" class="dim">Nobody is connected.</p>
+      <div class="row">
+        <button id="kick" class="danger" hidden>Kick and replace link</button>
+      </div>
+      <p style="margin-top:12px"><b>Link for your guest</b></p>
+      <div id="publicBox"></div>
+      <p class="dim" style="margin-top:12px">To try it on this Mac:</p>
+      <div class="link"><input id="localLink" type="text" readonly><button data-copy="localLink">Copy</button></div>
+      <div class="row"><button id="newToken">Replace link</button></div>
+    </section>
+
+    <section>
+      <h2>Locks</h2>
+      <label class="check"><input type="checkbox" data-lock="viewOnly"><span>View only <span class="dim">— the guest cannot click or type</span></span></label>
+      <label class="check"><input type="checkbox" data-lock="keyboard"><span>Keyboard allowed</span></label>
+      <label class="check"><input type="checkbox" data-lock="titleButtons"><span>Block the window buttons <span class="dim">— close, minimize, zoom</span></span></label>
+      <label class="check"><input type="checkbox" data-lock="edges"><span>Block dragging the window edges</span></label>
+      <label class="check"><input type="checkbox" data-lock="frameGuard"><span>Put the window back if the guest moved or resized it</span></label>
+      <label class="check"><input type="checkbox" data-lock="autoFocus"><span>Bring the window to the front when the guest clicks the picture</span></label>
+      <p style="margin-top:12px"><b>Keyboard shortcuts</b></p>
+      <select id="cmdMode">
+        <option value="list">Block the shortcuts in the list</option>
+        <option value="all">Block every ⌘ shortcut</option>
+        <option value="none">Block nothing (except system ones)</option>
+      </select>
+      <div id="shortcuts" class="chips"></div>
+      <div class="row">
+        <button id="addShortcut" class="small">Add shortcut</button>
+        <button id="resetShortcuts" class="small">Reset</button>
+      </div>
+      <p class="dim">System shortcuts (⌘Tab, ⌘Space, Mission Control, screenshots) are always blocked.</p>
+    </section>
+
+    <section>
+      <h2>Quality</h2>
+      <div class="row">
+        <select id="vDim"><option value="1280">up to 1280 px</option><option value="1600">up to 1600 px</option><option value="1920">up to 1920 px</option><option value="2560">up to 2560 px</option></select>
+        <select id="vFps"><option value="30">30 fps</option><option value="60">60 fps</option></select>
+        <select id="vKbps"><option value="3000">3 Mbps</option><option value="6000">6 Mbps</option><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="20000">20 Mbps</option></select>
+      </div>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="vDirect"><span>Direct connection <span class="dim">— video goes between the two computers over UDP instead of a relay; if that fails, PartyPortal falls back to the relay by itself</span></span></label>
+      <label class="check"><input type="checkbox" id="vAudio"><span>Send sound <span class="dim">— the guest hears the whole app that owns the window, not just this window</span></span></label>
+    </section>
+
+    <section>
+      <div class="row"><button id="quit">Quit PartyPortal</button><span class="dim">sharing stops and the link stops working</span></div>
+    </section>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id)
+  const api = async (path, body) => {
+    const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(j.error || 'Error ' + r.status)
+    return j
+  }
+  const DEFAULT_SHORTCUTS = ['Meta+KeyQ', 'Meta+KeyW', 'Meta+KeyH', 'Meta+KeyM', 'Meta+KeyN', 'Meta+KeyT', 'Meta+KeyO', 'Meta+KeyS', 'Meta+KeyP', 'Meta+KeyV', 'Meta+Comma', 'Control+Meta+KeyF']
+  const SIGNS = { Control: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘' }
+  const pretty = s => { const p = s.split('+'), code = p.pop(); return ['Control', 'Alt', 'Shift', 'Meta'].filter(m => p.includes(m)).map(m => SIGNS[m]).join('') + code.replace(/^(Key|Digit|Arrow)(?=.)/, '') }
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+  let state = null, masks = [], masksSaved = '[]', selected = null, drag = null, choosing = false, capturing = false, lastWindows = ''
+  const cache = {}
+  const once = (key, value, fn) => { const s = JSON.stringify(value); if (cache[key] !== s) { cache[key] = s; fn() } }
+
+  // ---- state ----
+  async function poll() {
+    try { apply(await api('/api/state')) } catch { $('headGuest').textContent = 'PartyPortal is not responding'; $('headGuest').className = 'pill bad' }
+  }
+  function apply(s) {
+    state = s
+    const sharing = s.sharing
+    $('stopAll').hidden = !sharing
+    $('shareCard').hidden = !sharing
+    $('pickCard').hidden = !!sharing && !choosing
+    $('testwin').hidden = !s.testwin || s.fake
+
+    once('mode', [s.fake, s.dryInput], () => {
+      const b = $('modeBanner')
+      b.hidden = !s.dryInput
+      b.innerHTML = s.fake
+        ? '<b>Test mode.</b> A test picture stands in for a window, and the guest input is only written to a log. No macOS permissions needed.'
+        : '<b>Guest input is only logged</b> (started with --dry-input): the window is real, but the mouse and keyboard are left alone.'
+    })
+    once('perms', s.permissions, () => {
+      const need = !s.fake && (!s.permissions.screen || (!s.permissions.accessibility && !s.dryInput))
+      $('permBanner').hidden = !need
+      $('perms').innerHTML = [['screen', 'Screen Recording', 'to show the window'], ['accessibility', 'Accessibility', 'so the guest can use the mouse and keyboard']]
+        .map(([k, name, why]) => `<p class="row"><span class="pill ${s.permissions[k] ? 'ok' : 'bad'}">${s.permissions[k] ? 'granted' : 'missing'}</span><b>${name}</b><span class="dim">— ${why}</span>${s.permissions[k] ? '' : `<button class="small" data-perm="${k}">Grant</button>`}</p>`).join('')
+    })
+    once('guest', [s.guest, s.sharing && s.sharing.paused, s.settings.locks.viewOnly], () => {
+      const g = s.guest, head = $('headGuest')
+      $('kick').hidden = !g
+      if (!g) { head.textContent = 'no guest'; head.className = 'pill'; $('guestLine').textContent = 'Nobody is connected.'; return }
+      const paused = s.sharing && s.sharing.paused
+      const PAUSE = { unfocused: 'paused: window is not in front', hidden: 'paused: window is minimized', locked: 'paused: screen is locked', noaccess: 'Accessibility permission is missing' }
+      const what = !g.control ? 'watching' : paused ? PAUSE[paused] || 'paused' : 'in control'
+      head.textContent = 'guest: ' + what
+      head.className = 'pill ' + (g.control && !paused ? 'ok' : 'warn')
+      $('guestLine').textContent = `Connected since ${new Date(g.since * 1000).toLocaleTimeString(undefined)} (${g.addr}), now ${what}. ` + (g.direct ? `Video goes direct${g.path ? ' (' + g.path + ')' : ''}.` : 'Video goes via relay.')
+    })
+    once('link', [s.link, s.tunnel], () => {
+      $('localLink').value = s.link.local
+      const box = $('publicBox'), t = s.tunnel
+      if (s.link.public) box.innerHTML = `<div class="link"><input id="publicLink" type="text" readonly value="${esc(s.link.public)}"><button data-copy="publicLink" class="primary">Copy</button></div><div class="row"><button id="tunnelOff">Close public access</button></div><p class="dim">The link goes through Cloudflare and lives while PartyPortal is running. Whoever has the link is the guest.</p>`
+      else if (t.running) box.innerHTML = '<p class="dim">Opening public access, this takes a few seconds…</p>'
+      else if (!t.available) box.innerHTML = '<p class="dim">A public link needs cloudflared: run <code>brew install cloudflared</code> in Terminal, then restart PartyPortal.</p>'
+      else box.innerHTML = `<div class="row"><button id="tunnelOn" class="primary">Open public access</button></div>${t.error ? `<p class="dim">That did not work: ${esc(t.error)}</p>` : '<p class="dim">No public link yet: the window is only reachable from this Mac.</p>'}`
+    })
+    once('locks', s.settings.locks, () => {
+      const l = s.settings.locks
+      document.querySelectorAll('[data-lock]').forEach(el => { el.checked = !!l[el.dataset.lock] })
+      $('cmdMode').value = l.cmdMode
+      $('shortcuts').hidden = l.cmdMode !== 'list'
+      $('shortcuts').innerHTML = l.blockedShortcuts.map(x => `<span class="chip">${esc(pretty(x))}<button data-unblock="${esc(x)}" title="Allow">×</button></span>`).join('') || '<span class="dim">the list is empty</span>'
+    })
+    once('video', s.settings.video, () => {
+      const v = s.settings.video
+      for (const [id, val] of [['vDim', v.maxDim], ['vFps', v.fps], ['vKbps', v.kbps]]) {
+        const el = $(id)
+        if (![...el.options].some(o => +o.value === val)) el.add(new Option(String(val), val))
+        el.value = val
+      }
+      $('vAudio').checked = v.audio !== false
+      $('vDirect').checked = v.direct !== false
+    })
+    once('log', s.log.length ? s.log[s.log.length - 1].t + ':' + s.log.length : 0, () => {
+      $('log').innerHTML = s.log.slice().reverse().map(e => `<div class="${esc(e.kind)}"><time>${new Date(e.t).toLocaleTimeString(undefined)}</time><span>${esc(e.text)}</span></div>`).join('')
+    })
+    if (sharing && choosing && s.permissions.screen) loadWindows(false)
+    if (sharing) {
+      $('shareTitle').textContent = sharing.window.title || sharing.window.app
+      $('shareStats').textContent = sharing.width ? `${sharing.width}×${sharing.height} · ${sharing.fps} fps · ${(sharing.kbps / 1000).toFixed(1)} Mbps` : 'the guest is not watching yet'
+      const incoming = JSON.stringify(sharing.masks)
+      if (!drag && incoming !== masksSaved && document.activeElement?.dataset?.maskName === undefined) { masks = sharing.masks; masksSaved = incoming; drawMasks() }
+      once('zones', sharing.zones, drawMasks)
+    } else if (!s.fake && !s.permissions.screen) {
+      $('pickNote').textContent = 'Grant Screen Recording first — the button is above.'
+    } else if (!s.fake || choosing) {
+      loadWindows(false)
+    }
+    if (!sharing && s.fake) { $('pickNote').textContent = 'Test mode: there is only one window.'; loadWindows(false) }
+  }
+
+  // ---- windows ----
+  async function loadWindows(force) {
+    if (!force && lastWindows && Date.now() - loadWindows.at < 4000) return
+    loadWindows.at = Date.now()
+    try {
+      const { windows } = await api('/api/windows')
+      const sig = JSON.stringify(windows.map(w => [w.id, w.title]))
+      if (sig === lastWindows && !force) return
+      lastWindows = sig
+      $('pickNote').textContent = windows.length ? '' : 'No suitable windows. Minimized windows are not listed.'
+      $('windows').innerHTML = windows.map(w => `<button class="win" data-win="${w.id}"><img loading="lazy" src="/api/thumb?id=${w.id}&v=${Date.now()}" alt=""><b>${esc(w.title || w.app)}</b><span>${esc(w.app)} · ${w.w}×${w.h}</span></button>`).join('')
+    } catch (e) { $('pickNote').textContent = e.message }
+  }
+  loadWindows.at = 0
+
+  // ---- masks ----
+  const saveMasks = async () => { masksSaved = JSON.stringify(masks); try { apply(await api('/api/settings', { masks })) } catch (e) { alert(e.message) } }
+  function drawMasks() {
+    const zones = (state && state.sharing && state.sharing.zones) || []
+    $('overlay').innerHTML = zones.map(z => `<div class="zone" style="left:${z.x * 100}%;top:${z.y * 100}%;width:${z.w * 100}%;height:${z.h * 100}%"></div>`).join('') +
+      masks.map(m => `<div class="mask ${m.hide ? 'hide' : ''} ${m.block ? 'block' : ''} ${m.id === selected ? 'sel' : ''}" data-id="${esc(m.id)}" style="left:${m.x * 100}%;top:${m.y * 100}%;width:${m.w * 100}%;height:${m.h * 100}%"><i>${esc(m.name)}</i><u></u></div>`).join('')
+    $('masklist').innerHTML = masks.map(m => `<div class="maskrow ${m.id === selected ? 'sel' : ''}" data-id="${esc(m.id)}"><input type="text" data-mask-name value="${esc(m.name)}" maxlength="40"><label><input type="checkbox" data-mask-flag="hide" ${m.hide ? 'checked' : ''}>hide from guest</label><label><input type="checkbox" data-mask-flag="block" ${m.block ? 'checked' : ''}>block clicks</label><button class="small" data-mask-del>Delete</button></div>`).join('')
+  }
+  const rel = e => { const r = $('overlay').getBoundingClientRect(); return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) } }
+  $('overlay').addEventListener('pointerdown', e => {
+    e.preventDefault()
+    const p = rel(e), el = e.target.closest('.mask')
+    if (el) {
+      const m = masks.find(x => x.id === el.dataset.id)
+      selected = m.id
+      drag = { kind: e.target.tagName === 'U' ? 'size' : 'move', m, start: p, orig: { ...m } }
+    } else {
+      const m = { id: Math.random().toString(36).slice(2, 10), name: 'Mask ' + (masks.length + 1), x: p.x, y: p.y, w: 0, h: 0, hide: true, block: true }
+      masks = [...masks, m]
+      selected = m.id
+      drag = { kind: 'new', m, start: p }
+    }
+    drawMasks()
+  })
+  addEventListener('pointermove', e => {
+    if (!drag) return
+    const p = rel(e), m = drag.m
+    if (drag.kind === 'new') { m.x = Math.min(p.x, drag.start.x); m.y = Math.min(p.y, drag.start.y); m.w = Math.abs(p.x - drag.start.x); m.h = Math.abs(p.y - drag.start.y) }
+    else if (drag.kind === 'move') { m.x = Math.min(1 - m.w, Math.max(0, drag.orig.x + p.x - drag.start.x)); m.y = Math.min(1 - m.h, Math.max(0, drag.orig.y + p.y - drag.start.y)) }
+    else { m.w = Math.max(0.01, Math.min(1 - m.x, drag.orig.w + p.x - drag.start.x)); m.h = Math.max(0.01, Math.min(1 - m.y, drag.orig.h + p.y - drag.start.y)) }
+    drawMasks()
+  })
+  addEventListener('pointerup', () => {
+    if (!drag) return
+    const d = drag
+    drag = null
+    if (d.kind === 'new' && (d.m.w < 0.01 || d.m.h < 0.01)) { masks = masks.filter(x => x !== d.m); selected = null; drawMasks(); return }
+    saveMasks()
+  })
+  $('masklist').addEventListener('change', e => {
+    const row = e.target.closest('.maskrow'); if (!row) return
+    const m = masks.find(x => x.id === row.dataset.id); if (!m) return
+    if (e.target.dataset.maskFlag) m[e.target.dataset.maskFlag] = e.target.checked
+    if (e.target.dataset.maskName !== undefined) m.name = e.target.value.trim() || 'Mask'
+    drawMasks(); saveMasks()
+  })
+  $('masklist').addEventListener('click', e => {
+    const row = e.target.closest('.maskrow'); if (!row) return
+    if (e.target.dataset.maskDel !== undefined) { masks = masks.filter(x => x.id !== row.dataset.id); drawMasks(); saveMasks(); return }
+    if (selected !== row.dataset.id && e.target.tagName !== 'INPUT') { selected = row.dataset.id; drawMasks() }
+  })
+
+  // ---- preview ----
+  let previewBusy = false
+  setInterval(async () => {
+    if (!state || !state.sharing || previewBusy || document.hidden) return
+    previewBusy = true
+    try {
+      const r = await fetch('/api/preview.jpg')
+      if (r.ok) { const url = URL.createObjectURL(await r.blob()), img = $('preview'), old = img.src; img.src = url; if (old.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(old), 1000) }
+    } catch {}
+    previewBusy = false
+  }, 900)
+
+  // ---- actions ----
+  const act = (path, body = {}) => api(path, body).then(r => { if (r && r.settings) apply(r); else poll() }).catch(e => alert(e.message))
+  const saveLocks = patch => act('/api/settings', { locks: { ...state.settings.locks, ...patch } })
+  document.addEventListener('click', e => {
+    const t = e.target
+    if (t.dataset.win) { choosing = false; $('pickNote').textContent = 'Connecting to the window…'; act('/api/share', { id: +t.dataset.win || +t.closest('[data-win]').dataset.win }) }
+    else if (t.closest('[data-win]')) { choosing = false; act('/api/share', { id: +t.closest('[data-win]').dataset.win }) }
+    else if (t.dataset.copy) { const el = $(t.dataset.copy); navigator.clipboard.writeText(el.value).then(() => { const old = t.textContent; t.textContent = 'Copied'; setTimeout(() => t.textContent = old, 1200) }) }
+    else if (t.dataset.perm) act('/api/permission', { kind: t.dataset.perm })
+    else if (t.dataset.unblock) saveLocks({ blockedShortcuts: state.settings.locks.blockedShortcuts.filter(x => x !== t.dataset.unblock) })
+    else if (t.id === 'tunnelOn') act('/api/tunnel', { on: true })
+    else if (t.id === 'tunnelOff') act('/api/tunnel', { on: false })
+  })
+  document.querySelectorAll('[data-lock]').forEach(el => el.addEventListener('change', () => saveLocks({ [el.dataset.lock]: el.checked })))
+  $('cmdMode').onchange = e => saveLocks({ cmdMode: e.target.value })
+  $('resetShortcuts').onclick = () => saveLocks({ blockedShortcuts: DEFAULT_SHORTCUTS, cmdMode: 'list' })
+  $('addShortcut').onclick = () => { capturing = true; $('addShortcut').textContent = 'Press the shortcut… (Esc to cancel)' }
+  addEventListener('keydown', e => {
+    if (!capturing) return
+    e.preventDefault()
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return
+    capturing = false
+    $('addShortcut').textContent = 'Add shortcut'
+    if (e.code === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) return
+    const combo = [e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean).concat(e.code).join('+')
+    const list = state.settings.locks.blockedShortcuts
+    if (!list.includes(combo)) saveLocks({ blockedShortcuts: [...list, combo], cmdMode: 'list' })
+  }, true)
+  const saveVideo = () => act('/api/settings', { video: { maxDim: +$('vDim').value, fps: +$('vFps').value, kbps: +$('vKbps').value, audio: $('vAudio').checked, direct: $('vDirect').checked } })
+  $('vDim').onchange = $('vFps').onchange = $('vKbps').onchange = $('vAudio').onchange = $('vDirect').onchange = saveVideo
+  $('refresh').onclick = () => loadWindows(true)
+  $('stopAll').onclick = () => { choosing = false; lastWindows = ''; act('/api/stop') }
+  $('change').onclick = () => { choosing = true; $('pickCard').hidden = false; loadWindows(true); $('pickCard').scrollIntoView({ behavior: 'smooth' }) }
+  $('focus').onclick = () => act('/api/focus')
+  $('kick').onclick = () => act('/api/kick')
+  $('newToken').onclick = () => { if (confirm('The old link will stop working. Replace it?')) act('/api/token') }
+  $('testwin').onclick = () => act('/api/testwin').then(() => setTimeout(() => loadWindows(true), 1200))
+  $('quit').onclick = () => { if (confirm('Quit PartyPortal? Sharing will stop.')) api('/api/quit', {}).then(() => { document.body.innerHTML = '<p style="padding:40px">PartyPortal has quit. You can close this tab.</p>' }) }
+
+  poll()
+  setInterval(poll, 1000)
+})()
+</script>
+</body>
+</html>

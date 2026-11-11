@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PartyPortal</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0e12; --bar: #141920; --line: #232b36; --text: #e6ebf2; --dim: #8b97a8; --accent: #3d9bff; --ok: #3ecf8e; --warn: #f5a623; --bad: #ff5d5d; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+  #bar { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--bar); border-bottom: 1px solid var(--line); user-select: none; }
+  #bar b { font-weight: 600; letter-spacing: .02em; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+  #dot.ok { background: var(--ok); } #dot.warn { background: var(--warn); } #dot.bad { background: var(--bad); }
+  #status { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #stats { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  button { font: inherit; color: var(--text); background: #1d2530; border: 1px solid var(--line); border-radius: 7px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: #26303d; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; font-weight: 600; }
+  button.on { background: #1d3a2c; border-color: #2c6a4c; color: var(--ok); }
+  button[hidden] { display: none; }
+  #stage { position: absolute; inset: 40px 0 0 0; display: flex; align-items: center; justify-content: center; }
+  :fullscreen #bar { display: none; } :fullscreen #stage { inset: 0; }
+  canvas { display: block; background: #000; outline: none; }
+  canvas.live { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9'%3E%3Ccircle cx='4.5' cy='4.5' r='3' fill='white' fill-opacity='.55' stroke='black' stroke-opacity='.6'/%3E%3C/svg%3E") 4 4, crosshair; }
+  #veil { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; pointer-events: none; }
+  #veil div { max-width: 460px; background: rgba(11, 14, 18, .86); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; font-size: 15px; }
+  #veil small { display: block; margin-top: 6px; color: var(--dim); font-size: 13px; }
+  #veil[hidden] { display: none; }
+  #toast { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%); background: #2a1719; border: 1px solid #6b2a2e; color: #ffb4b4; border-radius: 9px; padding: 8px 14px; opacity: 0; transition: opacity .2s; pointer-events: none; white-space: nowrap; }
+  #toast.show { opacity: 1; }
+  @media (max-width: 720px) { #stats, #status { display: none; } }
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>PartyPortal</b><span id="dot"></span><span id="status">connecting…</span>
+  <button id="take" class="primary" hidden>Take control</button>
+  <button id="lockMouse" hidden title="Unbounded mouse, as games expect. Esc to leave">Game mouse</button>
+  <button id="sound" hidden>Sound: on</button>
+  <button id="full" title="Full screen; in Chrome it also captures system keys">Full screen</button>
+  <span id="stats"></span>
+</div>
+<div id="stage">
+  <canvas id="screen" width="1280" height="720" tabindex="0"></canvas>
+  <div id="veil"><div id="veilText">Connecting…</div></div>
+  <div id="toast"></div>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id)
+  const canvas = $('screen'), ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
+  const token = (location.hash.match(/t=([A-Za-z0-9_-]+)/) || [])[1]
+  const PAUSES = {
+    unfocused: ['Paused: the window is not in front on the host', 'Click the picture to bring it back to the front.'],
+    hidden: ['Paused: the window is minimized', 'The host has to restore it.'],
+    locked: ['Paused: the host screen is locked', ''],
+    noaccess: ['Control is off for now', 'The host has not yet allowed PartyPortal to control the mouse and keyboard.'],
+  }
+
+  let ws, decoder, waitKey = true, gotFrame = false, final = false, retry = 0, bestGap = Infinity, late = 0
+  let state = { sharing: false, control: false, viewOnly: false, paused: null, title: '' }
+  let frames = 0, bytes = 0, rtt = null, pingN = 0, pingAt = 0, toastTimer
+
+  // Two ways to the host: the WebSocket (through the tunnel) and, once it is up, a direct WebRTC connection.
+  let pc = null, dcCtl = null, direct = false, rtcTimer = 0, rtcPieces = [], rtcPath = ''
+  const wsSend = obj => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)) }
+  const send = obj => {
+    if (direct && dcCtl && dcCtl.readyState === 'open' && obj.t !== 'auth' && !obj.t.startsWith('rtc')) dcCtl.send(JSON.stringify(obj))
+    else wsSend(obj)
+  }
+  window.__pp = { get direct() { return direct }, get rtcPath() { return rtcPath }, get state() { return state }, get frames() { return frames }, get gotFrame() { return gotFrame }, send }
+
+  function veil(text, sub) {
+    $('veil').hidden = !text
+    if (text) $('veilText').innerHTML = ''
+    if (text) { $('veilText').append(text); if (sub) { const s = document.createElement('small'); s.textContent = sub; $('veilText').append(s) } }
+  }
+  function toast(text) {
+    $('toast').textContent = text
+    $('toast').classList.add('show')
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => $('toast').classList.remove('show'), 1800)
+  }
+  function layout() {
+    const box = $('stage').getBoundingClientRect()
+    const k = Math.min(box.width / canvas.width, box.height / canvas.height)
+    canvas.style.width = Math.floor(canvas.width * k) + 'px'
+    canvas.style.height = Math.floor(canvas.height * k) + 'px'
+  }
+  addEventListener('resize', layout)
+  document.addEventListener('fullscreenchange', () => {
+    layout()
+    if (!document.fullscreenElement && navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock()
+  })
+
+  function render() {
+    const dot = $('dot'), st = $('status')
+    $('take').hidden = !state.sharing || state.viewOnly
+    $('take').textContent = state.control ? 'Release' : 'Take control'
+    $('take').className = state.control ? 'on' : 'primary'
+    $('lockMouse').hidden = !state.control
+    canvas.classList.toggle('live', state.control)
+    if (!ws || ws.readyState !== 1) { dot.className = 'bad'; st.textContent = final ? 'disconnected' : 'no connection, reconnecting…'; return }
+    if (!state.sharing) { dot.className = 'warn'; st.textContent = 'the host is not sharing anything yet'; veil('The host is not sharing anything yet', 'The window will appear here as soon as they pick one.'); return }
+    if (!gotFrame) { dot.className = 'warn'; st.textContent = 'waiting for the picture…'; veil('Waiting for the picture…'); return }
+    if (state.control && state.paused) {
+      const p = PAUSES[state.paused] || ['Paused', '']
+      dot.className = 'warn'; st.textContent = p[0]; veil(p[0], p[1]); return
+    }
+    veil(null)
+    dot.className = 'ok'
+    st.textContent = (state.title ? state.title + ' · ' : '') + (state.viewOnly ? 'view only' : state.control ? 'you are in control' : 'watching — click “Take control”')
+  }
+
+  // ---- video ----
+  function b64(s) { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out }
+  function configure(cfg) {
+    try { if (decoder && decoder.state !== 'closed') decoder.close() } catch {}
+    decoder = new VideoDecoder({
+      output: frame => {
+        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) { canvas.width = frame.displayWidth; canvas.height = frame.displayHeight; layout() }
+        ctx.drawImage(frame, 0, 0)
+        frame.close()
+        frames++
+        if (!gotFrame) { gotFrame = true; render() }
+      },
+      error: () => { waitKey = true; send({ t: 'kf' }) },
+    })
+    decoder.configure({ codec: cfg.codec, description: b64(cfg.description), optimizeForLatency: true })
+    waitKey = true
+    if (canvas.width !== cfg.width || canvas.height !== cfg.height) { canvas.width = cfg.width; canvas.height = cfg.height; layout() }
+    bestGap = Infinity
+  }
+  function onVideo(buf) {
+    if (!decoder || decoder.state !== 'configured') return
+    const view = new DataView(buf), key = (view.getUint8(1) & 1) === 1
+    bytes += buf.byteLength
+    if (waitKey && !key) return
+    if (decoder.decodeQueueSize > 5) { waitKey = true; send({ t: 'kf' }); return }  // fell behind: jump to a fresh keyframe
+    waitKey = false
+    // How much later than the best case this frame arrived: grows when frames queue up somewhere on the way.
+    const ts = Number(view.getBigInt64(2)), gap = performance.now() - ts / 1000
+    if (gap < bestGap) bestGap = gap
+    late = Math.max(late, gap - bestGap)
+    if (window.__pp.trace) window.__pp.trace.push([Math.round(performance.now()), Math.round(gap - bestGap), buf.byteLength, key ? 1 : 0])
+    decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(view.getBigInt64(2)), data: new Uint8Array(buf, 10) }))
+  }
+
+  // ---- audio ----
+  // Opus packets → AudioDecoder → short buffers scheduled back to back, a few tens of ms ahead of the clock.
+  let actx, gain, adec, audioKey = '', nextAt = 0, muted = false
+  const audio = { packets: 0, decoded: 0, played: 0, peak: 0, crossings: 0, frames: 0 }
+  function audioConfig(cfg) {
+    const key = cfg ? JSON.stringify(cfg) : ''
+    $('sound').hidden = !cfg || !('AudioDecoder' in window)
+    if (key === audioKey) return
+    audioKey = key
+    try { if (adec && adec.state !== 'closed') adec.close() } catch {}
+    adec = null
+    if (!cfg || !('AudioDecoder' in window)) return
+    adec = new AudioDecoder({ output: onAudio, error: () => { audioKey = '' } })
+    adec.configure({ codec: cfg.codec, sampleRate: cfg.sampleRate, numberOfChannels: cfg.channels })
+  }
+  // Browsers only let sound start from a click or a key press, so the context is made inside the first one.
+  function unlockAudio() {
+    if (actx) { if (actx.state === 'suspended') actx.resume(); return }
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    if (!Ctx) return
+    actx = new Ctx({ sampleRate: 48000, latencyHint: 'interactive' })
+    gain = actx.createGain()
+    gain.gain.value = muted ? 0 : 1
+    gain.connect(actx.destination)
+  }
+  addEventListener('pointerdown', unlockAudio, true)
+  addEventListener('keydown', unlockAudio, true)
+  function onAudioPacket(buf) {
+    audio.packets++
+    if (!adec || adec.state !== 'configured' || adec.decodeQueueSize > 10) return
+    adec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Number(new DataView(buf).getBigInt64(2)), data: new Uint8Array(buf, 10) }))
+  }
+  function onAudio(data) {
+    const n = data.numberOfFrames, channels = Math.min(2, data.numberOfChannels)
+    const planes = []
+    for (let c = 0; c < channels; c++) { const p = new Float32Array(n); data.copyTo(p, { planeIndex: c, format: 'f32-planar' }); planes.push(p) }
+    const rate = data.sampleRate
+    data.close()
+    audio.decoded++
+    audio.frames += n
+    for (let i = 1, p = planes[0]; i < n; i++) { const v = Math.abs(p[i]); if (v > audio.peak) audio.peak = v; if ((p[i - 1] < 0) !== (p[i] < 0)) audio.crossings++ }
+    if (!actx || actx.state !== 'running') return
+    const now = actx.currentTime
+    if (nextAt < now + 0.005) nextAt = now + 0.04  // ran dry: start again with a small cushion
+    if (nextAt > now + 0.25) return                // too much queued: skip this one to stay close to live
+    const buffer = actx.createBuffer(channels, n, rate)
+    planes.forEach((p, c) => buffer.copyToChannel(p, c))
+    const node = actx.createBufferSource()
+    node.buffer = buffer
+    node.connect(gain)
+    node.start(nextAt)
+    nextAt += n / rate
+    audio.played++
+  }
+  $('sound').onclick = () => {
+    muted = !muted
+    if (gain) gain.gain.value = muted ? 0 : 1
+    $('sound').textContent = muted ? 'Sound: off' : 'Sound: on'
+    $('sound').classList.toggle('on', !muted && !!actx)
+  }
+  window.__pp.audio = audio
+  window.__pp.mute = on => { muted = on; if (gain) gain.gain.value = on ? 0 : 1 }
+  window.__pp.audioState = () => (actx ? actx.state : 'none')
+
+  // ---- direct connection ----
+  function stopRtc(tellHost) {
+    clearTimeout(rtcTimer)
+    const old = pc
+    pc = dcCtl = null
+    direct = false
+    rtcPieces = []
+    rtcPath = ''
+    if (old) { old.onconnectionstatechange = null; try { old.close() } catch {} }
+    if (tellHost) wsSend({ t: 'rtc-off' })
+    render()
+  }
+  function startRtc(cfg) {
+    if (!cfg || !window.RTCPeerConnection || pc) return
+    const peer = pc = new RTCPeerConnection({ iceServers: cfg.iceServers })
+    const ctl = dcCtl = peer.createDataChannel('ctl')
+    const video = peer.createDataChannel('video')
+    const sound = peer.createDataChannel('audio', { ordered: false, maxRetransmits: 0 })
+    video.binaryType = sound.binaryType = 'arraybuffer'
+    peer.onicecandidate = e => { if (e.candidate && pc === peer) wsSend({ t: 'rtc-cand', c: e.candidate.toJSON() }) }
+    ctl.onopen = () => { if (pc !== peer) return; direct = true; clearTimeout(rtcTimer); waitKey = true; render() }
+    ctl.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'pong' && m.n === pingN) rtt = Math.round(performance.now() - pingAt) }
+    video.onmessage = e => {
+      if (typeof e.data === 'string') { rtcPieces = []; configure(JSON.parse(e.data)); return }  // codec config, in order with the frames
+      // A frame arrives in pieces; the first byte of each says whether it is the last one.
+      const piece = new Uint8Array(e.data)
+      rtcPieces.push(piece.subarray(1))
+      if (!(piece[0] & 1)) return
+      const whole = new Uint8Array(rtcPieces.reduce((n, p) => n + p.length, 0))
+      let off = 0
+      for (const p of rtcPieces) { whole.set(p, off); off += p.length }
+      rtcPieces = []
+      onVideo(whole.buffer)
+    }
+    sound.onmessage = e => onAudioPacket(e.data)
+    let lost = 0
+    peer.onconnectionstatechange = () => {
+      if (pc !== peer) return
+      clearTimeout(lost)
+      if (peer.connectionState === 'failed' || peer.connectionState === 'closed') stopRtc(true)
+      else if (peer.connectionState === 'disconnected') lost = setTimeout(() => { if (pc === peer && peer.connectionState !== 'connected') stopRtc(true) }, 3000)
+    }
+    peer.createOffer().then(o => peer.setLocalDescription(o)).then(() => { if (pc === peer) wsSend({ t: 'rtc-offer', sdp: peer.localDescription.sdp }) }).catch(() => stopRtc(true))
+    // No direct path within ten seconds (strict NAT on both sides): stay on the WebSocket.
+    rtcTimer = setTimeout(() => { if (pc === peer && !direct) stopRtc(true) }, 10000)
+  }
+  async function rtcStats() {
+    if (!pc || !direct) return
+    const stats = await pc.getStats()
+    let pair = null
+    stats.forEach(s => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId) })
+    if (!pair) return
+    const local = stats.get(pair.localCandidateId) || {}, remote = stats.get(pair.remoteCandidateId) || {}
+    rtcPath = `${(local.protocol || 'udp').toUpperCase()} ${local.candidateType}/${remote.candidateType}`
+  }
+
+  // ---- connection ----
+  function connect() {
+    if (!token) { final = true; veil('The link has no key', 'Ask the host for the complete link.'); render(); return }
+    if (!('VideoDecoder' in window)) { final = true; veil('This browser will not work', 'You need a recent Chrome, Edge or Safari and a link that starts with https.'); render(); return }
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws')
+    ws.binaryType = 'arraybuffer'
+    ws.onopen = () => { retry = 0; send({ t: 'auth', token }) }
+    ws.onmessage = e => {
+      if (typeof e.data !== 'string') { if (!direct) new Uint8Array(e.data, 0, 1)[0] === 2 ? onAudioPacket(e.data) : onVideo(e.data); return }
+      const m = JSON.parse(e.data)
+      if (m.type === 'video') configure(m)
+      else if (m.type === 'state') { const was = state.sharing; state = m; if (!m.sharing) gotFrame = false; if (!was && m.sharing) gotFrame = false; audioConfig(m.audio); render() }
+      else if (m.type === 'blocked') toast('🚫 ' + m.what + ' — ' + m.why)
+      else if (m.type === 'pong' && m.n === pingN) rtt = Math.round(performance.now() - pingAt)
+      else if (m.type === 'bye') { final = !!m.final; veil(m.reason || 'Disconnected') }
+      else if (m.type === 'hello') { stopRtc(false); startRtc(m.rtc); render() }
+      else if (m.type === 'rtc-answer') { if (pc) pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }).catch(() => stopRtc(true)) }
+      else if (m.type === 'rtc-cand') { if (pc) pc.addIceCandidate(m.c).catch(() => {}) }
+      else if (m.type === 'rtc-down') { stopRtc(false); waitKey = true }
+    }
+    ws.onclose = () => {
+      stopRtc(false)
+      state.control = false
+      gotFrame = false
+      render()
+      if (final) return
+      veil('Connection lost', 'Reconnecting…')
+      setTimeout(connect, Math.min(5000, 500 * 2 ** retry++))
+    }
+  }
+
+  // ---- input ----
+  const clamp = v => Math.min(1, Math.max(0, v))
+  const at = e => { const r = canvas.getBoundingClientRect(); return { x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height) } }
+  const locked = () => document.pointerLockElement === canvas
+  let pendingMove = null, moveTimer = 0, held = new Set()
+
+  function flushMove() { moveTimer = 0; if (pendingMove) { send(pendingMove); pendingMove = null } }
+  function queueMove(m) {
+    if (pendingMove && pendingMove.t === 'r' && m.t === 'r') { pendingMove.dx += m.dx; pendingMove.dy += m.dy } else pendingMove = m
+    if (!moveTimer) moveTimer = setTimeout(flushMove, 8)
+  }
+  function setControl(on) {
+    send({ t: 'control', on })
+    // Assume the host agrees so the very next click is not lost; its state message corrects us if it does not.
+    state.control = on && state.sharing && !state.viewOnly
+    render()
+    if (!on && locked()) document.exitPointerLock()
+    if (on) canvas.focus()
+  }
+
+  $('take').onclick = () => setControl(!state.control)
+  $('lockMouse').onclick = () => canvas.requestPointerLock()
+  $('full').onclick = async () => {
+    if (document.fullscreenElement) return document.exitFullscreen()
+    await document.documentElement.requestFullscreen()
+    if (navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock().catch(() => {})
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    e.preventDefault()
+    canvas.focus()
+    if (!state.control) { if (state.sharing && !state.viewOnly) setControl(true); return }
+    flushMove()
+    held.add(e.button)
+    send({ t: 'd', b: e.button, ...(locked() ? {} : at(e)) })
+  })
+  addEventListener('mouseup', e => {
+    if (!held.has(e.button)) return
+    held.delete(e.button)
+    flushMove()
+    send({ t: 'u', b: e.button, ...(locked() ? {} : at(e)) })
+  })
+  addEventListener('mousemove', e => {
+    if (!state.control) return
+    if (locked()) { const r = canvas.getBoundingClientRect(); queueMove({ t: 'r', dx: e.movementX / r.width, dy: e.movementY / r.height }); return }
+    if (e.target !== canvas && !held.size) return
+    queueMove({ t: 'm', ...at(e) })
+  })
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault()
+    if (!state.control) return
+    const k = e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? 400 : 1
+    send({ t: 'w', dx: Math.round(e.deltaX * k), dy: Math.round(e.deltaY * k), ...(locked() ? {} : at(e)) })
+  }, { passive: false })
+  canvas.addEventListener('contextmenu', e => e.preventDefault())
+
+  // Touch screens: one finger is the mouse with its left button held, two fingers scroll.
+  let touchScroll = null
+  const touchAt = t => at({ clientX: t.clientX, clientY: t.clientY })
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault()
+    unlockAudio()
+    if (!state.control) { if (state.sharing && !state.viewOnly) setControl(true); return }
+    if (e.touches.length === 1) {
+      const p = touchAt(e.touches[0])
+      send({ t: 'm', ...p })
+      send({ t: 'd', b: 0, ...p })
+      held.add(0)
+    } else if (e.touches.length === 2) {
+      if (held.delete(0)) send({ t: 'u', b: 0 })
+      touchScroll = { x: (e.touches[0].clientX + e.touches[1].clientX) / 2, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 }
+    }
+  }, { passive: false })
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault()
+    if (!state.control) return
+    if (e.touches.length === 1 && held.has(0)) queueMove({ t: 'm', ...touchAt(e.touches[0]) })
+    else if (e.touches.length === 2 && touchScroll) {
+      const x = (e.touches[0].clientX + e.touches[1].clientX) / 2, y = (e.touches[0].clientY + e.touches[1].clientY) / 2
+      send({ t: 'w', dx: Math.round((touchScroll.x - x) * 2), dy: Math.round((touchScroll.y - y) * 2), ...touchAt(e.touches[0]) })
+      touchScroll = { x, y }
+    }
+  }, { passive: false })
+  const touchEnd = e => {
+    e.preventDefault()
+    if (e.touches.length < 2) touchScroll = null
+    if (e.touches.length === 0 && held.delete(0)) {
+      flushMove()
+      send({ t: 'u', b: 0, ...(e.changedTouches[0] ? touchAt(e.changedTouches[0]) : {}) })
+    }
+  }
+  canvas.addEventListener('touchend', touchEnd, { passive: false })
+  canvas.addEventListener('touchcancel', touchEnd, { passive: false })
+
+  function onKey(e, down) {
+    if (!state.control) return
+    e.preventDefault()
+    send({ t: 'k', c: e.code, d: down ? 1 : 0 })
+  }
+  addEventListener('keydown', e => onKey(e, true), true)
+  addEventListener('keyup', e => onKey(e, false), true)
+  const release = () => { held.clear(); send({ t: 'release' }) }
+  addEventListener('blur', release)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) release() })
+
+  setInterval(() => {
+    const fps = frames, kb = Math.round(bytes * 8 / 1000)
+    frames = 0; bytes = 0
+    $('stats').textContent = gotFrame ? `${direct ? 'direct' : 'relayed'} · ${canvas.width}×${canvas.height} · ${fps} fps · ${(kb / 1000).toFixed(1)} Mbps` + (rtt != null ? ` · ${rtt} ms` : '') : ''
+    $('stats').title = direct ? 'Direct connection between the two computers (' + rtcPath + ')' : 'Video goes via a relay server: more delay'
+    rtcStats().catch(() => {})
+    window.__pp.fps = fps
+    window.__pp.kbps = kb
+    window.__pp.late = Math.round(late)
+    late = 0
+  }, 1000)
+  setInterval(() => { pingN++; pingAt = performance.now(); send({ t: 'ping', n: pingN }) }, 2000)
+
+  layout()
+  render()
+  connect()
+})()
+</script>
+</body>
+</html>

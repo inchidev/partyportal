@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Release build
+        run: swift build -c release
+
+      - name: Protocol smoke test
+        # --fake needs no permissions: a synthetic picture goes through the real mask, encoder and server code.
+        run: |
+          BIN="$(swift build -c release --show-bin-path)"
+          "$BIN/partyportal" --fake --no-open --token ci-token --config "$RUNNER_TEMP/config.json" --input-log "$RUNNER_TEMP/input.log" 2> "$RUNNER_TEMP/portal.log" &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:7373/api/state > /dev/null && break; sleep 0.5; done
+          node tools/smoke.mjs 7374 ci-token
+          curl -s -X POST http://127.0.0.1:7373/api/quit -H 'Content-Type: application/json' -d '{}'
+
+      - name: Journal
+        if: always()
+        run: cat "$RUNNER_TEMP/portal.log" || true
+
+      - name: App bundle
+        run: PP_INSTALL_DIR="$PWD/dist" ./scripts/build-app.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PartyPortal-${{ github.sha }}
+          path: dist/PartyPortal.app
+          retention-days: 14
+
+  site:
+    name: Landing page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Files exist and links stay inside the site
+        run: |
+          test -f site/index.html
+          ! grep -RInE 'href="(file:|/Users/)' site

@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PartyPortal bridge</title>
+<style>html, body { margin: 0; background: #000; }</style>
+<script>
+// Runs inside PartyPortal's invisible web view. One side is a WebSocket to PartyPortal on this Mac,
+// the other is a WebRTC connection straight to the guest's browser.
+//
+// From PartyPortal:  binary media messages (same framing the guest gets over WebSocket) and JSON {s: …}.
+// To PartyPortal:    JSON {b: …} about the connection, and the guest's own JSON messages forwarded untouched.
+// To the guest, three data channels:
+//   video  reliable, ordered; a frame is split into pieces, first byte 1 marks the last piece;
+//          the codec config travels on the same channel as text, so it always arrives before its keyframe
+//   audio  unreliable, unordered; one Opus packet per message, late sound is dropped rather than replayed
+//   ctl    reliable; the guest's input and our pongs
+(() => {
+  const key = new URLSearchParams(location.search).get('k')
+  const PIECE = 60000
+  let ws, pc, video, audio, ctl, dropping = false, askedKey = false, kbps = 8000
+  // Diagnostics for one tick: the longest pause between frames from PartyPortal, and the deepest send queue.
+  let lastIn = 0, maxInGap = 0, maxBuffered = 0
+
+  const tell = obj => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)) }
+
+  function closePeer() {
+    const old = pc
+    pc = video = audio = ctl = null
+    dropping = askedKey = false
+    if (old) { old.onconnectionstatechange = null; try { old.close() } catch {} }
+  }
+
+  function sendVideo(buf) {
+    // About a quarter of a second of video waiting to leave means the link cannot keep up:
+    // stop feeding it, and resume from a fresh keyframe once the queue has drained.
+    const high = Math.max(120000, kbps * 1000 / 8 / 4), low = high / 4
+    const isKey = (new Uint8Array(buf, 1, 1)[0] & 1) === 1
+    if (dropping) {
+      if (video.bufferedAmount > low) return
+      if (!isKey) { if (!askedKey) { askedKey = true; tell({ b: 'kf' }) } return }
+      dropping = false
+    } else if (video.bufferedAmount > high) {
+      dropping = true
+      askedKey = false
+      tell({ b: 'drop' })
+      return
+    }
+    const bytes = new Uint8Array(buf)
+    for (let off = 0; off < bytes.length; off += PIECE) {
+      const part = bytes.subarray(off, off + PIECE), msg = new Uint8Array(part.length + 1)
+      msg[0] = off + PIECE >= bytes.length ? 1 : 0
+      msg.set(part, 1)
+      video.send(msg)
+    }
+  }
+
+  async function pathInfo() {
+    if (!pc) return null
+    const stats = await pc.getStats()
+    let pair = null
+    stats.forEach(s => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId) })
+    if (!pair) stats.forEach(s => { if (s.type === 'candidate-pair' && s.state === 'succeeded' && (s.nominated || s.selected)) pair = pair || s })
+    if (!pair) return null
+    const local = stats.get(pair.localCandidateId) || {}, remote = stats.get(pair.remoteCandidateId) || {}
+    return { local: local.candidateType, remote: remote.candidateType, protocol: local.protocol, rtt: pair.currentRoundTripTime }
+  }
+
+  async function onOffer(m) {
+    closePeer()
+    const peer = pc = new RTCPeerConnection({ iceServers: m.ice || [] })
+    peer.onicecandidate = e => { if (e.candidate && pc === peer) tell({ b: 'sig', m: { type: 'rtc-cand', c: e.candidate.toJSON() } }) }
+    peer.onconnectionstatechange = () => { if (pc === peer && ['failed', 'closed'].includes(peer.connectionState)) { closePeer(); tell({ b: 'closed' }) } }
+    let announced = false
+    // PartyPortal starts sending the moment we say "open", so say it only when all three channels can carry data.
+    const ready = () => {
+      if (pc !== peer || announced || ![ctl, video, audio].every(c => c && c.readyState === 'open')) return
+      announced = true
+      tell({ b: 'open' })
+    }
+    peer.ondatachannel = e => {
+      if (pc !== peer) return
+      const ch = e.channel
+      ch.binaryType = 'arraybuffer'
+      ch.onopen = ready
+      if (ch.label === 'video') video = ch
+      else if (ch.label === 'audio') audio = ch
+      else if (ch.label === 'ctl') {
+        ctl = ch
+        ch.onmessage = ev => {
+          if (typeof ev.data !== 'string' || ev.data.length > 4096) return
+          if (ev.data.startsWith('{"t":"ping"')) { try { ch.send(JSON.stringify({ type: 'pong', n: JSON.parse(ev.data).n })) } catch {} return }
+          if (ws && ws.readyState === 1) ws.send(ev.data)  // the guest's own message, for PartyPortal to judge
+        }
+        ch.onclose = () => { if (pc === peer) { closePeer(); tell({ b: 'closed' }) } }
+      }
+      ready()
+    }
+    try {
+      await peer.setRemoteDescription({ type: 'offer', sdp: m.sdp })
+      const answer = await peer.createAnswer()
+      await peer.setLocalDescription(answer)
+      if (pc === peer) tell({ b: 'sig', m: { type: 'rtc-answer', sdp: answer.sdp } })
+    } catch (e) {
+      if (pc === peer) { closePeer(); tell({ b: 'closed', why: String(e) }) }
+    }
+  }
+
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/bridge?k=${encodeURIComponent(key)}`)
+    ws.binaryType = 'arraybuffer'
+    ws.onmessage = async e => {
+      if (typeof e.data !== 'string') {
+        const type = new Uint8Array(e.data, 0, 1)[0]
+        try {
+          if (type === 2) { if (audio && audio.readyState === 'open' && audio.bufferedAmount < 16000) audio.send(e.data) }
+          else if (video && video.readyState === 'open') {
+            const now = performance.now()
+            if (lastIn) maxInGap = Math.max(maxInGap, now - lastIn)
+            lastIn = now
+            maxBuffered = Math.max(maxBuffered, video.bufferedAmount)
+            sendVideo(e.data)
+          }
+        } catch {}
+        return
+      }
+      const m = JSON.parse(e.data)
+      if (m.type === 'video') { try { if (video && video.readyState === 'open') video.send(e.data) } catch {} }
+      else if (m.s === 'offer') onOffer(m)
+      else if (m.s === 'cand') { try { if (pc) await pc.addIceCandidate(m.c) } catch {} }
+      else if (m.s === 'reset') closePeer()
+      else if (m.s === 'tick') {
+        kbps = m.kbps || kbps
+        tell({ b: 'stats', inGap: Math.round(maxInGap), buffered: maxBuffered, path: await pathInfo().catch(() => null) })
+        maxInGap = maxBuffered = 0
+      }
+    }
+    ws.onclose = () => { closePeer(); setTimeout(connect, 1000) }
+  }
+  connect()
+})()
+</script>
