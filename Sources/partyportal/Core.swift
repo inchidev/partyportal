@@ -991,8 +991,10 @@ final class Core {
 
         case ("GET", "/api/preview.jpg"):
             videoQ.async { [weak self] in
-                let data = self?.lastRaw.flatMap { Preview.jpeg($0) }
-                reply(data.map { .data($0, type: "image/jpeg") } ?? .fail(404, "no frame yet"))
+                guard let raw = self?.lastRaw else { return reply(.fail(404, "no frame yet")) }
+                Preview.jpeg(raw) { data in
+                    reply(data.map { .data($0, type: "image/jpeg") } ?? .fail(503, "preview is busy"))
+                }
             }
 
         case ("POST", "/api/share"):

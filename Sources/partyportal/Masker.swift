@@ -1,9 +1,11 @@
 // Masks are painted on the host before the encoder ever sees the frame,
 // so hidden pixels never leave this machine.
 
-import CoreImage
+import CoreGraphics
 import CoreVideo
 import Foundation
+import ImageIO
+import VideoToolbox
 
 final class Masker {
     private var pool: CVPixelBufferPool?
@@ -65,14 +67,48 @@ final class Masker {
 }
 
 enum Preview {
-    private static let context = CIContext()
+    /// Its own queue: a slow or stuck picture must never hold the video queue.
+    /// (Core Image once deadlocked in here and froze the stream for the guest.)
+    private static let queue = DispatchQueue(label: "partyportal.preview", qos: .utility)
+    private static let lock = NSLock()
+    private static var busy = false
 
-    /// Unmasked JPEG for the host's own panel.
-    static func jpeg(_ pb: CVPixelBuffer, maxWidth: CGFloat = 1280) -> Data? {
-        var img = CIImage(cvPixelBuffer: pb)
-        let k = min(1, maxWidth / max(1, img.extent.width))
-        if k < 1 { img = img.transformed(by: CGAffineTransform(scaleX: k, y: k)) }
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        return context.jpegRepresentation(of: img, colorSpace: space, options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.72])
+    /// Unmasked JPEG for the host's own panel. Calls back on the preview queue;
+    /// nil when there is no picture or the previous request is still running.
+    static func jpeg(_ pb: CVPixelBuffer, maxWidth: Int = 1280, _ done: @escaping (Data?) -> Void) {
+        lock.lock()
+        if busy { lock.unlock(); return done(nil) }
+        busy = true
+        lock.unlock()
+        queue.async {
+            let data = render(pb, maxWidth: maxWidth)
+            lock.lock(); busy = false; lock.unlock()
+            done(data)
+        }
+    }
+
+    private static func render(_ pb: CVPixelBuffer, maxWidth: Int) -> Data? {
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        guard w > 0, h > 0 else { return nil }
+        let k = min(1, Double(maxWidth) / Double(w))
+        let ow = max(2, Int(Double(w) * k) & ~1), oh = max(2, Int(Double(h) * k) & ~1)
+        var out: CVPixelBuffer?
+        let attrs: [CFString: Any] = [kCVPixelBufferCGImageCompatibilityKey: true, kCVPixelBufferCGBitmapContextCompatibilityKey: true]
+        guard CVPixelBufferCreate(nil, ow, oh, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &out) == kCVReturnSuccess, let bgra = out else { return nil }
+        var session: VTPixelTransferSession?
+        guard VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &session) == noErr, let session else { return nil }
+        defer { VTPixelTransferSessionInvalidate(session) }
+        guard VTPixelTransferSessionTransferImage(session, from: pb, to: bgra) == noErr else { return nil }
+
+        CVPixelBufferLockBaseAddress(bgra, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(bgra, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(bgra), let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let info = CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let ctx = CGContext(data: base, width: ow, height: oh, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(bgra), space: space, bitmapInfo: info),
+              let image = ctx.makeImage() else { return nil }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.72] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? data as Data : nil
     }
 }
