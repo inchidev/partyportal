@@ -61,8 +61,8 @@ struct Settings: Codable {
     var publicLink: String?
 
     static let publicLinkModes = ["rendezvous", "tunnel"]
-    /// The tunnel until llll.gg's portals are live.
-    static let defaultPublicLink = "tunnel"
+    /// Through llll.gg: nothing to install and no cloudflared process. The host can still pick the tunnel.
+    static let defaultPublicLink = "rendezvous"
     var publicLinkMode: String { publicLink ?? Settings.defaultPublicLink }
 }
 
