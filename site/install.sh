@@ -5,7 +5,8 @@
 #
 # It downloads the app from the latest GitHub release, checks it against the checksum published beside it,
 # unpacks it and opens it. It also downloads cloudflared, which carries the public link, from Cloudflare's own
-# releases into ~/Library/Application Support/PartyPortal. Nothing else is touched and nothing needs sudo.
+# releases into ~/Library/Application Support/PartyPortal, and after an update it clears
+# PartyPortal's own two permission entries so that macOS asks for them again. Nothing needs sudo.
 #
 # For testing: PP_ARCHIVE=/path/to/PartyPortal-arm64.zip (with its .sha256 beside it) installs a local file,
 # PP_INSTALL_DIR and PP_SUPPORT_DIR pick other folders, PP_NO_OPEN=1 does not open the app,
@@ -16,7 +17,24 @@ RELEASES="https://github.com/inchidev/partyportal/releases/latest/download"
 
 CLOUDFLARED="${PP_CLOUDFLARED_URL:-https://github.com/cloudflare/cloudflared/releases/latest/download}"
 
+BUNDLE_ID="dev.inchi.partyportal"
+
 die() { echo "PartyPortal: $*" >&2; exit 1; }
+
+cdhash() { codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '/^CDHash=/{print $2}'; }
+
+# Without a Developer ID the app is signed ad hoc, and macOS ties its permissions to the exact build. After an
+# update the old entries stay in System Settings, switched on, and do not count for the new build: the app says
+# "missing" beside a switch that is on. Removing our own two entries makes macOS simply ask again.
+# Not done when the same build is installed again, nor for a build with a real signature, whose permissions last.
+reset_permissions() {
+  local new="$1" old="$2" info
+  info=$(codesign -dv "$new" 2>&1) || return 0
+  case "$info" in *Signature=adhoc*) ;; *) return 0 ;; esac
+  [ -d "$old" ] && [ "$(cdhash "$old")" = "$(cdhash "$new")" ] && return 0
+  tccutil reset ScreenCapture "$BUNDLE_ID" > /dev/null 2>&1 || true
+  tccutil reset Accessibility "$BUNDLE_ID" > /dev/null 2>&1 || true
+}
 
 # The public link needs cloudflared. It comes from Cloudflare, built for this Mac's processor, and is not
 # part of our archive. Without it the app still works; only the public link is missing.
@@ -65,6 +83,7 @@ main() {
   codesign --verify --deep --strict "$tmp/out/PartyPortal.app" 2>/dev/null || die "the app's signature is broken. Nothing was installed."
 
   mkdir -p "$dest"
+  reset_permissions "$tmp/out/PartyPortal.app" "$dest/PartyPortal.app"
   rm -rf "$dest/PartyPortal.app"
   mv "$tmp/out/PartyPortal.app" "$dest/PartyPortal.app"
   echo "Installed: $dest/PartyPortal.app"
@@ -79,7 +98,7 @@ main() {
     open "$dest/PartyPortal.app"
     echo "Opening it. macOS will ask for two permissions: Screen Recording and Accessibility."
   fi
-  echo "To update, run the same command again. macOS asks for the permissions again after an update."
+  echo "To update, run the same command again. After an update macOS asks for the two permissions again."
 }
 
 main "$@"
