@@ -37,7 +37,7 @@ web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC to the 
 site/                the landing page (static) and install.sh, the one-line installer it offers
 scripts/             build-app.sh builds and installs the app here; package.sh makes the archive install.sh downloads
 tools/smoke.mjs      protocol check without a browser (a port, or a portal page URL)
-tools/portal-relay.mjs  a local stand-in for a portal (relay protocol v1), no dependencies
+tools/portal-relay.mjs  a local stand-in for a portal and for llll.gg's POST /api/portals (relay protocol v1), no dependencies
 Tests/               unit tests for InputPolicy and settings
 ```
 
@@ -55,12 +55,25 @@ WebSocket at `/portal/<id>/ws`; `PortalLink` dials `wss://…/portal/<id>/host`,
 gets `pp.ready`, then `pp.guest` open/close around one guest whose frames pass verbatim both ways. Each open
 guest is a `RelayedGuest`, which Core takes like a local socket (`GuestSocket`): the token check, hello, state,
 media and input are unchanged, and the guest key is the token (the portal checks it as well). No tunnel runs and
-`/api/token` refuses: the portal owns the link. Closes 4401/4404/4409 are final; anything else reconnects (1 s,
-doubling, 30 s at most) and counts as the guest leaving. `ping`/`pong` every 20 s. When Core closes a guest (bad token, kick), its `bye`
+`/api/token` refuses: the portal owns the link. Closes 4401/4404/4409/4426 (protocol: "Update PartyPortal or this
+Server") and 4429 (llll.gg's `relay_limit`) are final, and so is an HTTP 404/410 instead of a socket (the portal is
+gone); anything else reconnects (1 s, doubling, 30 s at most) and counts as the guest leaving. `ping`/`pong` every 20 s. When Core closes a guest (bad token, kick), its `bye`
 goes first and `{"t":"pp.close"}` follows: the portal closes that guest's socket (4403) and answers `pp.guest`
 open:false. A guest's own `pp.` messages are dropped by the portal. Sends never block: in-flight bytes are `pendingBytes`, and more than a few binary sends in flight
 reads as a full queue, so the video sink drops and resumes on a keyframe as it does for a local socket. The page
 finds its socket next to itself (`<path>/ws`) and shows `pp.wait` as "Waiting for the host" until hello comes.
+`pp.ready` may carry `iceServers` (the Server's TURN): while that host connection lasts they replace TurnRelay's
+for the bridge's offer and the guest's `hello`, and `hello` goes out at once instead of waiting for TurnRelay
+(`PortalLink.cleanIceServers` keeps only stun/turn/turns URLs and string credentials). A frame over 1 MiB is not
+sent to a portal at all: Workers refuse it, and llll.gg ends the portal for it.
+
+**A link through llll.gg** (no Server of your own; ADR 0014 case 3). "Open public access" (`POST /api/tunnel`
+on, or `--public`) follows `settings.publicLink`: "tunnel" is cloudflared as before; "rendezvous" posts to
+`<--rendezvous>/api/portals` (default `https://llll.gg`, no account, no body), gets
+`{portalId, url, guestUrl, hostLink, expiresAt}` and joins `hostLink` like a `partyportal://` link but without asking
+— the host started it. The portal's page must be on the rendezvous' own host (or under it). The portal lives 12 h;
+when it has stopped, "Open a new link" makes another. The Share page has the switch ("Link through llll.gg /
+Through a tunnel"); unset, `Settings.defaultPublicLink` decides.
 
 **Direct connection.** The guest gets `hello` with ICE servers and sends an offer over the WebSocket; Core relays
 it to the bridge page, which answers. The offer carries three data channels — `ctl` (guest input, pings), `audio`
@@ -137,7 +150,11 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - Portal mode without L4: `node tools/portal-relay.mjs --host-key hk --guest-key gk` (port 8787, id `test`;
   `POST /portal/test/end` ends it with 4404), then `partyportal --fake --no-open --portal
   http://127.0.0.1:8787/portal/test --portal-key hk --token gk` (plain http only for 127.0.0.1) and
-  `node tools/smoke.mjs http://127.0.0.1:8787/portal/test gk`. A guest refused by the portal sees 4401.
+  `node tools/smoke.mjs http://127.0.0.1:8787/portal/test gk`. A guest refused by the portal sees 4401; smoke
+  prints the `ice` the guest's `hello` carried. The stand-in also takes `--ice servers.json` (sent in `pp.ready`),
+  `--limit-bytes N` (4429 like llll.gg), `--version 2` (4426), and answers `POST /api/portals` like llll.gg, with
+  portals at `/p/<id>`: `partyportal --fake --rendezvous http://127.0.0.1:8787`, pick "Link through 127.0.0.1" on
+  the Share page (or `POST /api/settings {"share":{"via":"rendezvous"}}`) and open public access.
 - Transport knobs: `#relay=1` in a guest link forces the TURN relay, `#track=0` forces the data channel;
   `PP_ICE=local` drops STUN and TURN (same-network path only), `PP_FIXED_KBPS=1` stops bitrate adaptation,
   `PP_FAKE_FULL_FPS=1` lets the test picture run at the configured rate instead of 30.
