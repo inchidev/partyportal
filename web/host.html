@@ -303,7 +303,7 @@
       const box = $('publicBox'), t = s.tunnel
       if (s.link.public) box.innerHTML = `<div class="link"><input id="publicLink" type="text" readonly value="${esc(s.link.public)}"><button data-copy="publicLink" class="primary">Copy</button></div><div class="row"><button id="tunnelOff">Close public access</button></div><p class="dim">The link goes through Cloudflare and lives while PartyPortal is running. Whoever has the link is the guest.</p>`
       else if (t.running) box.innerHTML = '<p class="dim">Opening public access, this takes a few seconds…</p>'
-      else if (!t.available) box.innerHTML = '<p class="dim">This copy of PartyPortal was built without cloudflared, which carries the public link. Run <code>brew install cloudflared</code> in Terminal, then restart PartyPortal.</p>'
+      else if (!t.available) box.innerHTML = '<p class="dim">A public link needs cloudflared, and it is not on this Mac. Install PartyPortal again with the command from partyportal.inchi.dev, or run <code>brew install cloudflared</code> in Terminal, then restart PartyPortal.</p>'
       else box.innerHTML = `<div class="row"><button id="tunnelOn" class="primary">Open public access</button></div>${t.error ? `<p class="dim">That did not work: ${esc(t.error)}</p>` : '<p class="dim">No public link yet: the window is only reachable from this Mac.</p>'}`
     })
     once('locks', s.settings.locks, () => {

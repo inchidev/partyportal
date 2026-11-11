@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds PartyPortal.app (the river binary, the test window, cloudflared and the web pages in one bundle)
+# Builds PartyPortal.app (the river binary, the test window and the web pages in one bundle)
 # and installs it to ~/Applications.
 # Signed with your Apple Development certificate when there is one, so macOS keeps the
 # Screen Recording and Accessibility permissions across rebuilds.
@@ -15,12 +15,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/partyportal" "$BIN/partyportal-testwin" "$APP/Contents/MacOS/"
 cp -R web "$APP/Contents/Resources/web"
 
-# cloudflared travels inside the app, so the host installs nothing for a public link.
-# Taken from this Mac (PP_CLOUDFLARED, or Homebrew's); it is a copy for this Mac's architecture only.
+# cloudflared is not part of the app by default: the installer downloads the right one for each Mac, and a
+# build from source uses Homebrew's. PP_CLOUDFLARED=/path/to/cloudflared puts that copy inside the bundle.
 SIGN=("$APP/Contents/MacOS/partyportal-testwin")
-CF="${PP_CLOUDFLARED:-$(command -v cloudflared || true)}"
-if [ -n "$CF" ] && [ -x "$CF" ]; then
-  CF=$(realpath "$CF")
+if [ -n "${PP_CLOUDFLARED:-}" ]; then
+  CF=$(realpath "$PP_CLOUDFLARED")
   cp "$CF" "$APP/Contents/MacOS/cloudflared"
   chmod 755 "$APP/Contents/MacOS/cloudflared"
   SIGN+=("$APP/Contents/MacOS/cloudflared")
@@ -28,8 +27,6 @@ if [ -n "$CF" ] && [ -x "$CF" ]; then
   CF_LICENSE="$(dirname "$(dirname "$CF")")/LICENSE"
   [ -f "$CF_LICENSE" ] && cp "$CF_LICENSE" "$APP/Contents/Resources/cloudflared-LICENSE"
   echo "Bundled cloudflared: $("$CF" --version 2>/dev/null | head -1)"
-else
-  echo "No cloudflared on this Mac (brew install cloudflared, or PP_CLOUDFLARED=/path): this build has no public link of its own"
 fi
 
 # App icon: every size macOS wants, from the one 1024 px source.

@@ -473,17 +473,15 @@
     <div class="wrap">
       <hr class="rule">
       <p class="kicker">Install</p>
-      <h2>Build it from source.</h2>
+      <h2>One line in Terminal.</h2>
       <div class="two">
         <div>
-          <p>There are no downloads yet. You need Xcode's command line tools; the script builds the app and puts it in <code>~/Applications</code>.</p>
+          <p>It downloads the app, checks it against its published checksum, puts it in <code>~/Applications</code> and opens it. For a Mac with Apple Silicon; run it again to update.</p>
           <div class="cmd has-copy">
             <button type="button" data-copy="install-cmd" hidden>Copy</button>
-            <pre id="install-cmd">git clone https://github.com/inchidev/partyportal
-cd partyportal
-./scripts/build-app.sh
-open ~/Applications/PartyPortal.app</pre>
+            <pre id="install-cmd">curl -fsSL https://partyportal.inchi.dev/install.sh | bash</pre>
           </div>
+          <p class="note">The app is not signed with an Apple Developer ID yet, which is why it comes through Terminal and not as a download to double-click. <a href="/install.sh">Read the script</a> first if you like, or <a href="https://github.com/inchidev/partyportal#build-from-source">build it from source</a>.</p>
           <p class="note">On first run macOS asks for two permissions: <b>Screen Recording</b>, to show the window, and <b>Accessibility</b>, so the guest's mouse and keyboard can reach it.</p>
         </div>
         <div>
