@@ -17,25 +17,22 @@ jobs:
       - name: Tests
         run: swift test
 
-      - name: Build the app
-        run: PP_INSTALL_DIR="$PWD/dist" ./scripts/build-app.sh
-
+      # The same script as by hand: the installer (site/install.sh) takes PartyPortal-<arch>.zip and its
+      # checksum from the latest release, so these names must not change.
       - name: Package
-        run: |
-          cd dist
-          ditto -c -k --keepParent PartyPortal.app "PartyPortal-${GITHUB_REF_NAME}-macos.zip"
-          shasum -a 256 "PartyPortal-${GITHUB_REF_NAME}-macos.zip" > "PartyPortal-${GITHUB_REF_NAME}-macos.zip.sha256"
+        run: ./scripts/package.sh
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'NOTES'
-          This build is not notarised yet. After unzipping, move `PartyPortal.app` to `~/Applications` and run:
-
           ```bash
-          xattr -dr com.apple.quarantine ~/Applications/PartyPortal.app
+          curl -fsSL https://partyportal.inchi.dev/install.sh | bash
           ```
+
+          For a Mac with Apple Silicon, macOS 14 or later. This build is not signed with an Apple Developer ID
+          yet: it installs through Terminal, and macOS asks for the permissions again after each update.
 
           Or build it yourself: `./scripts/build-app.sh`.
           NOTES
