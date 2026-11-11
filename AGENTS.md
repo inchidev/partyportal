@@ -12,10 +12,11 @@ and every rule about what the guest may see or do is enforced on the host.
 
 ```
 Sources/partyportal/
-  main.swift         flags, menu bar item, --check
-  Core.swift         all state: one window, one guest, host panel API, 0.1 s window monitor, bitrate adaptation
+  main.swift         flags, app delegate, --check, --mark-preview
+  Core.swift         all state: one window, one guest, host panel API, 0.1 s window monitor, bitrate adaptation,
+                     what the guest reports back
   Capture.swift      ScreenCaptureKit single-window capture; FakeSource (known picture + tone)
-  Masker.swift       masked copy of a frame (no copy → no frame); host preview JPEG
+  Masker.swift       masked copy of a frame (no copy → no frame); host preview JPEG on its own queue
   Encoder.swift      VideoToolbox H.264, no B-frames, AVCC + avcC out
   Audio.swift        app audio → Opus, 20 ms packets, silence is not sent
   Server.swift       HTTP + WebSocket on Network.framework, no dependencies
@@ -30,7 +31,7 @@ Sources/partyportal/
   Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
 web/guest.html       guest page: media track → <video> over the canvas (or WebCodecs → canvas), Web Audio, mouse/keys/touch → host
-web/host.html        host panel
+web/host.html        host panel: a sidebar and one page at a time; the same page in the app's window and in a browser
 web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC to the guest (video as a media track from a worker, the rest in data channels)
 site/                the landing page (static)
 tools/smoke.mjs      protocol check without a browser
@@ -45,10 +46,38 @@ Wire format, binary: `[1][key flag][timestamp, 8 bytes BE, µs][AVCC]` for video
 for audio. The codec config is JSON `{type:"video", codec, description, width, height}` sent before the keyframe.
 
 **Direct connection.** The guest gets `hello` with ICE servers and sends an offer over the WebSocket; Core relays
-it to the bridge page, which answers. Three data channels: `video` (reliable, frames split into 60 KB pieces,
-first byte 1 marks the last piece, config travels on the same channel as text), `audio` (unreliable), `ctl`
-(guest input, pings). When all three are open the bridge says `open` and Core switches the sink. Anything fails →
-back to the WebSocket.
+it to the bridge page, which answers. The offer carries three data channels — `ctl` (guest input, pings), `audio`
+(unreliable) and `video` — and a transceiver that offers to receive a video track. When the channels are open the
+bridge says `open` (with `track: true|false`) and Core switches the sink to the bridge. Anything fails → back to
+the WebSocket. `hello` waits for `TurnRelay.servers` (a moment; four seconds at worst), so a guest's first seconds
+are always on the WebSocket.
+
+**Video as a media track** (the normal case: wherever WebKit has `VideoTrackGenerator`; checked on macOS 26 only). The bridge posts every frame from Core to a worker,
+which decodes it (WebCodecs) and writes it to a `VideoTrackGenerator`; that track sits in the guest's
+transceiver and WebRTC encodes it again with its own congestion control, retransmissions and jitter buffer.
+So there are two encoders: ours feeds the bridge next door at `Core.localKbps` (well above the target, and never
+squeezed while `trackMode` is on), WebRTC's sends to the guest under `settings.video.kbps` as a ceiling
+(`capBitrate`) with a start bitrate munged into the offer. The guest plays the track in `<video id="tv">` laid
+over the canvas; the canvas keeps taking the input. Masks are painted before our encoder, so the bridge never
+holds an unmasked frame.
+
+**Video in a data channel** (the fallback: an older WebKit, or `#track=0`). Frames are split into 60 KB pieces, first
+byte 1 marks the last piece; the codec config travels on the same channel as text, so it arrives before its
+keyframe. The bridge drops frames when the channel's buffer fills and asks Core to `squeeze`.
+
+**Relay.** `Turn.swift` reads a Cloudflare TURN key from `turn.json` beside the config (or the environment) and
+mints a credential that expires; both peers get it in their ICE servers. No key → STUN only. The relay is one more
+ICE candidate, not a mode: a direct path wins when there is one.
+
+**What the guest reports.** Once a second the page sends `stat` (frames shown, lateness or frozen milliseconds,
+frames skipped). On the WebSocket and in a data channel Core lowers the bitrate on it — behind the tunnel our
+socket never backs up, so this is the only signal. The page also judges its own UDP path over six seconds and
+goes back to the WebSocket for the rest of the visit (`rtc-off`, `why: slow`) when the picture keeps standing still.
+
+**The host's app.** `HostWindow` is a web view on the panel's own address; `Core.showPanel` opens it (the bare
+binary falls back to the browser). Closing the window switches the app to `.accessory`: it stays as `StatusIcon`,
+which reads `Core.stateJSON()` once a second and picks a `PortalMood`. A second launch finds the ports taken,
+posts `/api/show` to the running copy and exits.
 
 **Input.** Guest JSON (`m` move, `r` relative move, `d`/`u` button, `w` wheel, `k` key, `control`, `release`) →
 `Core.guestCommand` → `InputController.handle` → policy → backend. `RealInput.pauseReason` decides whether input
@@ -100,6 +129,14 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 
 ## Traps already stepped on
 
+- **Nothing slow on the video queue.** The panel's preview was once rendered there with Core Image; one render
+  deadlocked and every frame after it waited behind it — the guest saw a frozen picture while the journal looked
+  fine. The preview has its own queue now, one request at a time.
+- **Do not restart the app while `/api/state` shows a guest.** People test live without saying so. Rebuilding
+  the bundle under a running copy is harmless (pages are read from disk per request; ⌘R reloads the panel).
+- **A copy killed while stuck can keep its ports** until its process finally exits (seen once, for an hour).
+  `--admin-port` and `--guest-port` start another one beside it.
+- **A guest's `host` candidate is not "the same network"**: with IPv6 it is their public address anywhere.
 - **A locked screen breaks measurements.** Windows stop drawing (ScreenCaptureKit delivers nothing) and macOS
   slows the bridge page down (pauses of ~200 ms show up as `inGap` and as freezes at the guest). Only `--fake`
   is worth running then, and its freeze counts are inflated.
@@ -135,7 +172,7 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - **The config must arrive before its keyframe.** That is why it travels on the video channel in direct mode.
 - **Browsers on macOS swallow key-up while ⌘ is held.** The host releases every held key when ⌘ goes up.
 - **stdout is for `--print-link` only.** The journal goes to stderr.
-- **A second copy must not half-start.** If the ports are taken, it exits (and opens the running copy's panel).
+- **A second copy must not half-start.** If the ports are taken, it asks the running copy to show its window and exits.
 
 ## Do not
 
@@ -143,3 +180,5 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - Do not add a dependency to the host without a very good reason.
 - Do not weaken a rule to make a test pass: a guest-facing check that cannot decide must refuse.
 - Do not put secrets, tokens or personal names in the repository, logs or examples.
+  The TURN key lives in `turn.json` outside the repository and never appears in `/api/state` or the panel.
+- Do not use servers of other projects for PartyPortal. A managed Cloudflare service, or ask first.

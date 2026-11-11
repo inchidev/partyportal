@@ -131,7 +131,7 @@ credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
   WebRTC (`VideoTrackGenerator`), which encodes them again with its own congestion control, retransmissions and
   jitter buffer — so packet loss costs sharpness for a moment instead of seconds of delay. The host's own encoder
   then only feeds the web view next door, at a generous bitrate. Masks are painted before that first encoder,
-  so the web view never holds an unmasked frame. Where WebKit cannot make a track (before macOS 15) the picture
+  so the web view never holds an unmasked frame. Where WebKit cannot make a track (older macOS; checked on macOS 26 only) the picture
   travels in a data channel as before; `#track=0` in a guest link forces that, for comparison. Sound and input
   stay in data channels.
 - **Relay (optional).** Behind a symmetric NAT — phone hotspots, many mobile carriers — no direct path exists.
@@ -187,7 +187,7 @@ More detail for people (and agents) working on the code: [AGENTS.md](AGENTS.md).
 - With your pointer, the mouse and the focus are shared: you cannot use that Mac for something else, and anything
   that takes the focus away pauses the guest until their next click.
 - With strict NAT and no TURN key of your own there is no direct path and the fallback is slower.
-- Without a media track (macOS 14), the data channel stalls on packet loss.
+- Without a media track (an older macOS), the data channel stalls on packet loss.
 - macOS host only. A Windows host is planned.
 
 ## Roadmap
