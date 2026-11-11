@@ -90,6 +90,10 @@ prints one JSON line on stdout once the link is ready and keeps running until yo
 | `--fake` | synthetic picture and logged input: needs no permissions, good for trying things out and for CI |
 | `--dry-input` | real window, but the guest's input is only written to a log |
 | `--check NAME` | diagnostics: permissions, and whether clicks can reach that window right now |
+| `--portal URL --portal-key KEY --token T` | no tunnel: the guest's page lives on a portal (`https://…/portal/<id>`), this Mac dials out to it with KEY, and the guest's link is `URL#t=T` |
+
+A portal can also be opened from a link, `partyportal://portal?url=<portal page>&key=<this Mac's key>&t=<guest's key>`;
+the app asks before it connects. `node tools/portal-relay.mjs --host-key K --guest-key T` is a local stand-in for one.
 
 The guest page handles touch: one finger is the mouse, two fingers scroll.
 

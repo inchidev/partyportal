@@ -28,6 +28,7 @@ Sources/partyportal/
   Bridge.swift       the WebRTC peer: web/bridge.html in a 2×2 px WebKit window
   HostApp.swift      the Mac app around the core: window with the panel (a web view on web/host.html), menu bar mark that changes colour, main menu
   Tunnel.swift       cloudflared quick tunnel with its own empty config; the binary is the installer's (Application Support), else Homebrew's
+  PortalLink.swift   portal mode: an outbound WebSocket to a portal on an L4 Server; RelayedGuest, a guest behind it
   Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
 web/guest.html       guest page: media track → <video> over the canvas (or WebCodecs → canvas), Web Audio, mouse/keys/touch → host
@@ -35,7 +36,8 @@ web/host.html        host panel: a sidebar and one page at a time; the same page
 web/bridge.html      runs inside the app: WebSocket from Core ↔ WebRTC to the guest (video as a media track from a worker, the rest in data channels)
 site/                the landing page (static) and install.sh, the one-line installer it offers
 scripts/             build-app.sh builds and installs the app here; package.sh makes the archive install.sh downloads
-tools/smoke.mjs      protocol check without a browser
+tools/smoke.mjs      protocol check without a browser (a port, or a portal page URL)
+tools/portal-relay.mjs  a local stand-in for a portal (relay protocol v1), no dependencies
 Tests/               unit tests for InputPolicy and settings
 ```
 
@@ -45,6 +47,20 @@ Tests/               unit tests for InputPolicy and settings
 (encoder thread) → the current sink: the guest's WebSocket, or the bridge's WebSocket when a direct connection is up.
 Wire format, binary: `[1][key flag][timestamp, 8 bytes BE, µs][AVCC]` for video, `[2][0][timestamp][Opus packet]`
 for audio. The codec config is JSON `{type:"video", codec, description, width, height}` sent before the keyframe.
+
+**Portal on an L4 Server.** The other way to a public link (`--portal URL --portal-key K --token T`, the link
+`partyportal://portal?url=…&key=…&t=…` after the host confirms, or `POST /api/portal` on the panel's port from a
+second copy). The Server (a Worker with a Durable Object) serves guest.html at `/portal/<id>` and keeps the guest's
+WebSocket at `/portal/<id>/ws`; `PortalLink` dials `wss://…/portal/<id>/host`, says `{"t":"host","key":K,"v":1}`,
+gets `pp.ready`, then `pp.guest` open/close around one guest whose frames pass verbatim both ways. Each open
+guest is a `RelayedGuest`, which Core takes like a local socket (`GuestSocket`): the token check, hello, state,
+media and input are unchanged, and the guest key is the token (the portal checks it as well). No tunnel runs and
+`/api/token` refuses: the portal owns the link. Closes 4401/4404/4409 are final; anything else reconnects (1 s,
+doubling, 30 s at most) and counts as the guest leaving. `ping`/`pong` every 20 s. A close from Core cannot reach the
+guest's socket at the portal (v1 has no message for it): Core's `bye` goes first, then this Mac stops talking to
+that guest. Sends never block: in-flight bytes are `pendingBytes`, and more than a few binary sends in flight
+reads as a full queue, so the video sink drops and resumes on a keyframe as it does for a local socket. The page
+finds its socket next to itself (`<path>/ws`) and shows `pp.wait` as "Waiting for the host" until hello comes.
 
 **Direct connection.** The guest gets `hello` with ICE servers and sends an offer over the WebSocket; Core relays
 it to the bridge page, which answers. The offer carries three data channels — `ctl` (guest input, pings), `audio`
@@ -118,6 +134,10 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
   state on a light and a dark strip. The window's page is web/host.html — look at it in a browser at the panel's
   address. Both pages share one palette (Discord-like) and one rule: controls in a row have one height
   (48 px in the guest's tray, 32 px in the panel, 24 px for the small ones).
+- Portal mode without L4: `node tools/portal-relay.mjs --host-key hk --guest-key gk` (port 8787, id `test`;
+  `POST /portal/test/end` ends it with 4404), then `partyportal --fake --no-open --portal
+  http://127.0.0.1:8787/portal/test --portal-key hk --token gk` (plain http only for 127.0.0.1) and
+  `node tools/smoke.mjs http://127.0.0.1:8787/portal/test gk`. A guest refused by the portal sees 4401.
 - Transport knobs: `#relay=1` in a guest link forces the TURN relay, `#track=0` forces the data channel;
   `PP_ICE=local` drops STUN and TURN (same-network path only), `PP_FIXED_KBPS=1` stops bitrate adaptation,
   `PP_FAKE_FULL_FPS=1` lets the test picture run at the configured rate instead of 30.
@@ -173,7 +193,11 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - **The config must arrive before its keyframe.** That is why it travels on the video channel in direct mode.
 - **Browsers on macOS swallow key-up while ⌘ is held.** The host releases every held key when ⌘ goes up.
 - **stdout is for `--print-link` only.** The journal goes to stderr.
-- **A second copy must not half-start.** If the ports are taken, it asks the running copy to show its window and exits.
+- **A second copy must not half-start.** If the ports are taken, it asks the running copy to show its window (or
+  hands it the portal) and exits. That is also why a `--portal` connects only half a second after start: a copy
+  that dialled the portal first would push the running one out of it with a final 4409.
+- **A link must not move the host to someone else's portal unasked.** `partyportal://portal?…` always asks the
+  host first (a sheet with the portal's address); only a local process or the panel may switch without asking.
 
 ## Do not
 
