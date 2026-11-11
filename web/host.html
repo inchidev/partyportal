@@ -5,35 +5,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PartyPortal — host panel</title>
 <style>
-  :root { color-scheme: light dark; --bg: #f4f6f9; --card: #fff; --line: #dfe4ea; --text: #15202b; --dim: #66758a; --accent: #1677e5; --ok: #1a9c61; --warn: #b7791f; --bad: #d63b3b; --chip: #eef2f6; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #0d1116; --card: #161c24; --line: #263040; --text: #e6ebf2; --dim: #8b97a8; --accent: #3d9bff; --ok: #3ecf8e; --warn: #f5a623; --bad: #ff6b6b; --chip: #1f2833; } }
+  /* Same palette as the guest page (Discord-like), always dark: the app's window is dark too. */
+  :root { color-scheme: dark; --bg: #313338; --card: #2b2d31; --head: #1e1f22; --line: #3f4147; --text: #f2f3f5; --dim: #b5bac1; --accent: #5865f2; --accent-hover: #4752c4; --ok: #23a55a; --warn: #f0b232; --bad: #f23f43; --bad-bg: #da373c; --chip: #383a40; --chip-hover: #4e5058; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 5; }
-  header h1 { font-size: 17px; margin: 0; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+  header { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 20px; background: var(--head); position: sticky; top: 0; z-index: 5; user-select: none; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 700; }
+  header svg { width: 28px; height: 28px; flex: none; }
   header .grow { flex: 1; }
   main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
   @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
   .col { display: grid; gap: 16px; min-width: 0; }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
-  h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); font-weight: 600; }
+  section { background: var(--card); border-radius: 8px; padding: 16px; min-width: 0; }
+  h2 { font-size: 12px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .02em; color: var(--dim); font-weight: 700; }
   p { margin: 6px 0; }
   .dim { color: var(--dim); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  button { font: inherit; color: var(--text); background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
-  button:hover { filter: brightness(1.06); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
-  button.small { padding: 2px 8px; font-size: 13px; }
-  input[type=text], select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; min-width: 0; }
+  /* One height for everything that sits in a row: 32 px (24 for the small ones). */
+  button { font: inherit; font-weight: 600; color: var(--text); background: var(--chip); border: 0; border-radius: 8px; height: 32px; padding: 0 14px; cursor: pointer; white-space: nowrap; transition: background .12s; }
+  button:hover { background: var(--chip-hover); }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); }
+  button.danger { background: var(--bad-bg); color: #fff; }
+  button.danger:hover { background: #a12828; }
+  button.small { height: 24px; padding: 0 8px; font-size: 13px; border-radius: 6px; }
+  input[type=text], select { font: inherit; color: var(--text); background: var(--head); border: 0; border-radius: 8px; height: 32px; padding: 0 10px; min-width: 0; }
   label.check { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; cursor: pointer; }
   label.check input { margin-top: 3px; }
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12.5px; font-weight: 600; background: var(--chip); }
+  .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 13px; font-weight: 600; background: var(--chip); }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
   .banner { grid-column: 1 / -1; background: color-mix(in srgb, var(--warn) 14%, var(--card)); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
   #windows { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
-  .win { border: 1px solid var(--line); border-radius: 10px; padding: 8px; cursor: pointer; background: var(--bg); text-align: left; display: block; width: 100%; }
-  .win:hover { border-color: var(--accent); }
+  .win { border-radius: 8px; padding: 8px; cursor: pointer; background: var(--bg); text-align: left; display: block; width: 100%; height: auto; font-weight: 400; outline: 2px solid transparent; }
+  .win:hover { background: var(--chip); outline-color: var(--accent); }
   .win img { width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #0003; border-radius: 6px; display: block; }
   .win b, .win span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .win span { color: var(--dim); font-size: 12.5px; }
@@ -52,8 +56,8 @@
   .maskrow.sel { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .maskrow label { display: flex; gap: 5px; align-items: center; white-space: nowrap; cursor: pointer; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-  .chip { background: var(--chip); border: 1px solid var(--line); border-radius: 7px; padding: 2px 4px 2px 9px; font-variant-numeric: tabular-nums; display: inline-flex; gap: 4px; align-items: center; }
-  .chip button { border: 0; background: none; padding: 0 5px; color: var(--dim); }
+  .chip { background: var(--chip); border-radius: 8px; padding: 2px 4px 2px 9px; font-variant-numeric: tabular-nums; display: inline-flex; gap: 4px; align-items: center; }
+  .chip button { background: none; height: auto; padding: 0 5px; color: var(--dim); }
   .link { display: flex; gap: 6px; margin: 6px 0; }
   .link input { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
   #log { max-height: 260px; overflow: auto; font-size: 13px; }
@@ -65,7 +69,15 @@
 </head>
 <body>
 <header>
-  <h1>PartyPortal</h1><span class="dim">host panel</span>
+  <svg viewBox="0 0 64 64" aria-hidden="true">
+    <clipPath id="pp-clip"><path d="M0 0H64V47H57A25 9.5 0 0 1 7 47H0Z"/></clipPath>
+    <ellipse cx="32" cy="47" rx="25" ry="9.5" fill="#111214"/>
+    <path d="M7 47a25 9.5 0 0 1 50 0" fill="none" stroke="#5865f2" stroke-width="6" stroke-linecap="round"/>
+    <g clip-path="url(#pp-clip)"><g transform="rotate(-11 32 47)"><path d="M32 9 52.9 60H11.1Z" fill="#ffcf24"/><path d="M26.7 22h10.6l2.1 5H24.6Z" fill="#111214"/><path d="M21.7 34h20.6l2 5H19.7Z" fill="#111214"/></g></g>
+    <circle cx="27.3" cy="9.7" r="5.5" fill="#5865f2"/>
+    <path d="M7 47a25 9.5 0 0 0 50 0" fill="none" stroke="#5865f2" stroke-width="6" stroke-linecap="round"/>
+  </svg>
+  <h1>PartyPortal</h1>
   <span class="grow"></span>
   <span id="headGuest" class="pill">no guest</span>
   <button id="stopAll" class="danger" hidden>Stop sharing</button>
@@ -358,13 +370,16 @@
   }, 900)
 
   // ---- actions ----
+  // In the app's own window the pasteboard is the app's job; in a browser tab, the browser's.
+  const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pp
+  const copyText = async text => { if (native) native.postMessage({ copy: text }); else await navigator.clipboard.writeText(text) }
   const act = (path, body = {}) => api(path, body).then(r => { if (r && r.settings) apply(r); else poll() }).catch(e => alert(e.message))
   const saveLocks = patch => act('/api/settings', { locks: { ...state.settings.locks, ...patch } })
   document.addEventListener('click', e => {
     const t = e.target
     if (t.dataset.win) { choosing = false; $('pickNote').textContent = 'Connecting to the window…'; act('/api/share', { id: +t.dataset.win || +t.closest('[data-win]').dataset.win }) }
     else if (t.closest('[data-win]')) { choosing = false; act('/api/share', { id: +t.closest('[data-win]').dataset.win }) }
-    else if (t.dataset.copy) { const el = $(t.dataset.copy); navigator.clipboard.writeText(el.value).then(() => { const old = t.textContent; t.textContent = 'Copied'; setTimeout(() => t.textContent = old, 1200) }) }
+    else if (t.dataset.copy) { const el = $(t.dataset.copy); copyText(el.value).then(() => { const old = t.textContent; t.textContent = 'Copied'; setTimeout(() => t.textContent = old, 1200) }) }
     else if (t.dataset.perm) act('/api/permission', { kind: t.dataset.perm })
     else if (t.dataset.unblock) saveLocks({ blockedShortcuts: state.settings.locks.blockedShortcuts.filter(x => x !== t.dataset.unblock) })
     else if (t.id === 'tunnelOn') act('/api/tunnel', { on: true })

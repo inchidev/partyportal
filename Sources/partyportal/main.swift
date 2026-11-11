@@ -16,6 +16,28 @@
 import AppKit
 import Foundation
 
+/// For looking at the menu bar icon without a menu bar: `partyportal --mark-preview out.png` draws every
+/// mood side by side, on a light and on a dark strip, eight times the real size.
+func markPreview(_ path: String) -> Never {
+    let moods: [PortalMood] = [.idle, .waiting, .watching, .control, .attention]
+    let cell: CGFloat = 18 * 8, pad: CGFloat = 24
+    let size = NSSize(width: (cell + pad) * CGFloat(moods.count) + pad, height: (cell + pad) * 2 + pad)
+    let sheet = NSImage(size: size, flipped: true) { _ in
+        for (row, dark) in [false, true].enumerated() {
+            (dark ? NSColor(white: 0.13, alpha: 1) : NSColor(white: 0.93, alpha: 1)).set()
+            NSRect(x: 0, y: CGFloat(row) * (cell + pad) + pad / 2, width: size.width, height: cell + pad).fill()
+            for (i, mood) in moods.enumerated() {
+                let color = mood.color ?? (dark ? NSColor.white : NSColor.black)
+                PortalMark.image(points: cell, color: color).draw(in: NSRect(x: pad + CGFloat(i) * (cell + pad), y: pad + CGFloat(row) * (cell + pad), width: cell, height: cell))
+            }
+        }
+        return true
+    }
+    guard let tiff = sheet.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+    try? png.write(to: URL(fileURLWithPath: path))
+    exit(0)
+}
+
 var opts = Options()
 var args = Array(CommandLine.arguments.dropFirst())
 func value(_ flag: String) -> String {
@@ -53,6 +75,7 @@ while !args.isEmpty {
     case "--fake": opts.fake = true
     case "--dry-input": opts.dryInput = true
     case "--no-open": opts.openPanel = false
+    case "--mark-preview": markPreview(value(flag))
     case "--public": opts.publicLink = true
     case "--view-only": opts.viewOnly = true
     case "--print-link": opts.printLink = true
@@ -78,26 +101,25 @@ while !args.isEmpty {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let core: Core
-    var item: NSStatusItem?
+    let window: HostWindow
+    var icon: StatusIcon?
     var signals: [DispatchSourceSignal] = []
 
-    init(core: Core) { self.core = core }
+    init(core: Core) {
+        self.core = core
+        window = HostWindow(adminPort: core.opts.adminPort)
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        core.showPanel = { [weak self] in self?.window.show() }
         do {
             try core.start()
         } catch {
             FileHandle.standardError.write(Data("Could not start: \(error.localizedDescription). PartyPortal may be running already.\n".utf8))
             exit(1)
         }
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "PartyPortal"
-        let menu = NSMenu()
-        menu.addItem(withTitle: "Open host panel", action: #selector(openPanel), keyEquivalent: "").target = self
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit PartyPortal", action: #selector(quit), keyEquivalent: "").target = self
-        item.menu = menu
-        self.item = item
+        MainMenu.install(quit: #selector(quit), target: self)
+        icon = StatusIcon(core: core, openWindow: { [weak self] in self?.window.show() }, quit: { [weak self] in self?.quit() })
 
         for sig in [SIGINT, SIGTERM] {
             signal(sig, SIG_IGN)
@@ -108,7 +130,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func openPanel() { core.openPanel() }
+    // Clicking the app again (Finder, Dock, Spotlight) while it is running brings the window back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        window.show()
+        return false
+    }
+
+    // The window closing is not the app quitting: it stays in the menu bar.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        core.shutdown()
+        return .terminateNow
+    }
 
     @objc func quit() {
         core.shutdown()

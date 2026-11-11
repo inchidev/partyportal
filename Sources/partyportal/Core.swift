@@ -185,7 +185,7 @@ final class Core {
             server.onFail = { [unowned self] _ in
                 // Most likely PartyPortal is already running: show its panel instead of starting a second copy.
                 FileHandle.standardError.write(Data("Port \(server.port) is in use — PartyPortal seems to be running already.\n".utf8))
-                if self.opts.openPanel { self.openPanel() }
+                if self.opts.openPanel { self.wakeRunningCopy() }
                 exit(1)
             }
         }
@@ -222,8 +222,41 @@ final class Core {
         source?.stop()
     }
 
+    /// Set by the app: shows the host's window. Without it (a bare binary, tests) the panel opens in the browser.
+    var showPanel: (() -> Void)?
+
     func openPanel() {
+        if let showPanel { return showPanel() }
         if let url = URL(string: "http://127.0.0.1:\(opts.adminPort)") { NSWorkspace.shared.open(url) }
+    }
+
+    /// The menu bar's shortcuts for what the panel's buttons do.
+    func hostAction(_ name: String) {
+        switch name {
+        case "stop":
+            stopShare(note: nil)
+        case "kick":
+            if let g = guest {
+                g.ws.send(json: ["type": "bye", "final": true, "reason": "The host closed access."])
+                g.ws.close(code: 4002)
+                dropGuest(note: "Guest removed by the host")
+            }
+        default:
+            break
+        }
+    }
+
+    /// PartyPortal is already running (its ports are taken): ask that copy to show its window, then leave.
+    private func wakeRunningCopy() {
+        guard let url = URL(string: "http://127.0.0.1:\(opts.adminPort)/api/show") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 1.5
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 2)
     }
 
     /// Frames carry the generation they were captured for; anything from a stopped source is ignored.
@@ -976,7 +1009,7 @@ final class Core {
         return true
     }
 
-    private func stateJSON() -> [String: Any] {
+    func stateJSON() -> [String: Any] {
         lock.lock()
         let size = videoSize
         lock.unlock()
@@ -1100,6 +1133,10 @@ final class Core {
                     NSWorkspace.shared.open(url)
                 }
             }
+            reply(.ok)
+
+        case ("POST", "/api/show"):
+            openPanel()
             reply(.ok)
 
         case ("POST", "/api/focus"):

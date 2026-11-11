@@ -33,7 +33,11 @@ cd partyportal
 open ~/Applications/PartyPortal.app
 ```
 
-The host panel opens at `http://127.0.0.1:7373` and a menu bar item appears.
+PartyPortal opens its window and puts its mark in the menu bar. Close the window and it keeps running there;
+the mark's colour says what is going on: plain — nothing shared, blue — a window is shared and nobody has come
+yet, yellow — a guest is watching, green — a guest is in control, red — something needs you (a missing
+permission, a paused guest). Its menu opens the window, copies the guest's link, disconnects the guest, stops
+sharing and quits. The same panel is also at `http://127.0.0.1:7373` for a browser tab or a script.
 
 1. **Permissions.** Grant *Screen Recording* (to show the window) and *Accessibility* (so the guest can move the
    mouse and press keys). macOS asks to relaunch after the first one.
@@ -66,7 +70,7 @@ prints one JSON line on stdout once the link is ready and keeps running until yo
 | `--print-link` | print the link as one JSON line on stdout (the journal goes to stderr) |
 | `--view-only` | the guest can watch but not touch |
 | `--takeover` | the guest uses your pointer instead of working in the background (works in every app) |
-| `--no-open` | do not open the host panel in a browser |
+| `--no-open` | do not open the window at start (it stays in the menu bar) |
 | `--fake` | synthetic picture and logged input: needs no permissions, good for trying things out and for CI |
 | `--dry-input` | real window, but the guest's input is only written to a log |
 | `--check NAME` | diagnostics: permissions, and whether clicks can reach that window right now |

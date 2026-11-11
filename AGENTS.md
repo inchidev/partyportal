@@ -25,6 +25,7 @@ Sources/partyportal/
   AX.swift           Accessibility: window buttons, focus, frame, "what is under the pointer"
   VirtualDisplay.swift  a software-only monitor (CGVirtualDisplay) the shared window is parked on in background mode
   Bridge.swift       the WebRTC peer: web/bridge.html in a 2×2 px WebKit window
+  HostApp.swift      the Mac app around the core: window with the panel (a web view on web/host.html), menu bar mark that changes colour, main menu
   Tunnel.swift       cloudflared quick tunnel with its own empty config
   Turn.swift         optional TURN relay: mints short-lived Cloudflare credentials from a local key (turn.json, never in the repo or the panel)
 Sources/testwin/     a window made for testing (logs events to $TMPDIR/partyportal-testwin.log)
@@ -80,6 +81,10 @@ PP_FAKE_NOISE=1 .build/debug/partyportal --fake            # full-bitrate stream
 - In track mode read `window.__pp.track` instead (fps, kbps, `freeze` ms, lost %, size, jitter buffer ms) and
   `bridgeDiag.track` in `/api/state` for the sender's side (encoder fps, size, `limit`, WebRTC's `budget`).
   Take pixels from the `<video id="tv">`, not the canvas — the canvas is stale while a track plays.
+- The menu bar mark cannot be screenshotted from a script: `partyportal --mark-preview out.png` draws every
+  state on a light and a dark strip. The window's page is web/host.html — look at it in a browser at the panel's
+  address. Both pages share one palette (Discord-like) and one rule: controls in a row have one height
+  (48 px in the guest's tray, 32 px in the panel, 24 px for the small ones).
 - Transport knobs: `#relay=1` in a guest link forces the TURN relay, `#track=0` forces the data channel;
   `PP_ICE=local` drops STUN and TURN (same-network path only), `PP_FIXED_KBPS=1` stops bitrate adaptation,
   `PP_FAKE_FULL_FPS=1` lets the test picture run at the configured rate instead of 30.
