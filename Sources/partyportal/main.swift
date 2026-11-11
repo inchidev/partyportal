@@ -8,6 +8,13 @@
 //   partyportal --window "Simulator" --public --print-link --no-open
 //                              for scripts and agents: share that window, open a public link and print it
 //                              to stdout as one JSON line {"type":"link","url":…,"local":…,"window":…}
+//   --portal URL --portal-key K --token T
+//                              no tunnel: the guest's page lives on a portal (an L4 Server, https://…/portal/<id>), this
+//                              Mac dials out to it with key K, and the guest's link is URL#t=T
+//   partyportal://portal?url=<portal page>&key=<host key>&t=<guest key>   the same, from a link (the host confirms)
+//   --rendezvous ORIGIN        where a portal is opened when there is no Server of your own (default https://llll.gg):
+//                              POST ORIGIN/api/portals, then joined like a link. Used when the panel's public link is
+//                              set to go "through llll.gg"
 //   --view-only                the guest can watch but not touch
 //   --background / --takeover  how the guest's input arrives: addressed to the app (the default), or through
 //                              your pointer (works in every app, but the window must be in front)
@@ -84,17 +91,34 @@ while !args.isEmpty {
     case "--admin-port": opts.adminPort = UInt16(value(flag)) ?? opts.adminPort
     case "--guest-port": opts.guestPort = UInt16(value(flag)) ?? opts.guestPort
     case "--token": opts.token = value(flag)
+    case "--portal": opts.portalURL = value(flag)
+    case "--portal-key": opts.portalKey = value(flag)
+    case "--rendezvous":
+        var origin = value(flag)
+        while origin.hasSuffix("/") { origin.removeLast() }
+        opts.rendezvous = origin
     case "--config": opts.configPath = value(flag)
     case "--input-log": opts.inputLog = value(flag)
     case "--window": opts.autoWindow = value(flag)
     case "--web": opts.webDir = value(flag)
     case "--check": check(value(flag))
     case "-h", "--help":
-        print("partyportal [--fake] [--dry-input] [--window NAME] [--admin-port N] [--guest-port N] [--token T] [--config FILE] [--input-log FILE] [--web DIR] [--no-open]")
+        print("partyportal [--fake] [--dry-input] [--window NAME] [--admin-port N] [--guest-port N] [--token T] [--portal URL --portal-key KEY] [--rendezvous ORIGIN] [--config FILE] [--input-log FILE] [--web DIR] [--no-open]")
         exit(0)
     default:
         if flag.hasPrefix("-psn") { continue }  // Finder adds this when launching an .app
         FileHandle.standardError.write(Data("Unknown option: \(flag)\n".utf8))
+        exit(2)
+    }
+}
+
+if opts.portalURL != nil {
+    if opts.portalKey == nil || opts.token == nil {
+        FileHandle.standardError.write(Data("--portal needs --portal-key (this Mac's key) and --token (the guest's key)\n".utf8))
+        exit(2)
+    }
+    if PortalLink.addresses(page: opts.portalURL!) == nil {
+        FileHandle.standardError.write(Data("--portal: needs the https address of the portal's page (http only for 127.0.0.1)\n".utf8))
         exit(2)
     }
 }
@@ -104,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let window: HostWindow
     var icon: StatusIcon?
     var signals: [DispatchSourceSignal] = []
+    private var started = false
 
     init(core: Core) {
         self.core = core
@@ -112,11 +137,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         core.showPanel = { [weak self] in self?.window.show() }
+        core.confirmPortal = { [weak self] page, answer in self?.confirmPortal(page, answer) }
         do {
             try core.start()
         } catch {
             FileHandle.standardError.write(Data("Could not start: \(error.localizedDescription). PartyPortal may be running already.\n".utf8))
             exit(1)
+        }
+        started = true
+        // A link that launched us: wait until the ports are surely ours (a busy port hands it to the running copy).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, let p = self.core.pendingPortal else { return }
+            self.core.pendingPortal = nil
+            self.core.requestPortal(page: p.page, key: p.key, token: p.token, ask: p.ask) { error in
+                if let error { FileHandle.standardError.write(Data("Portal link: \(error)\n".utf8)) }
+            }
         }
         MainMenu.install(quit: #selector(quit), target: self, reload: #selector(HostWindow.reload), window: window)
         icon = StatusIcon(core: core, openWindow: { [weak self] in self?.window.show() }, quit: { [weak self] in self?.quit() })
@@ -128,6 +163,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             src.resume()
             signals.append(src)
         }
+    }
+
+    /// partyportal://portal?url=<portal page>&key=<this Mac's key>&t=<guest's key>
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard url.scheme?.lowercased() == "partyportal", url.host?.lowercased() == "portal",
+                  let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { continue }
+            let q = Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
+            let p = (page: q["url"] ?? "", key: q["key"] ?? "", token: q["t"] ?? "", ask: true)
+            guard started else {
+                core.pendingPortal = p
+                continue
+            }
+            core.requestPortal(page: p.page, key: p.key, token: p.token, ask: true) { error in
+                if let error { FileHandle.standardError.write(Data("Portal link: \(error)\n".utf8)) }
+            }
+        }
+    }
+
+    /// A link from outside could point this Mac at someone else's portal and show them the shared window:
+    /// the host says yes first, seeing where it goes.
+    private func confirmPortal(_ page: URL, _ answer: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Connect to the portal at \(page.host ?? "?")?"
+        alert.informativeText = "Your guest's link becomes \(page.absoluteString). Whoever opens it with its key sees the window you share. Connect only to a portal you made yourself."
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+        window.ask(alert, answer)
     }
 
     // Clicking the app again (Finder, Dock, Spotlight) while it is running brings the window back.

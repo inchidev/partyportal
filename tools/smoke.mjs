@@ -1,7 +1,8 @@
-// Protocol smoke test without a browser: node tools/smoke.mjs [guest-port | wss://host] [token]
+// Protocol smoke test without a browser: node tools/smoke.mjs [guest-port | wss://host | page URL] [token]
 // Checks that a wrong token gets no video, and that the right one gets a config and a keyframe.
+// A page URL with a path tests a portal: http://127.0.0.1:8787/portal/test → ws://127.0.0.1:8787/portal/test/ws
 const where = process.argv[2] || '7374'
-const base = /^wss?:/.test(where) ? where.replace(/\/$/, '') : `ws://127.0.0.1:${where}`
+const base = /^(wss?|https?):/.test(where) ? where.replace(/^http/, 'ws').replace(/[#?].*$/, '').replace(/\/$/, '') : `ws://127.0.0.1:${where}`
 const token = process.argv[3] || ''
 
 function attempt(tok, label) {
@@ -15,8 +16,10 @@ function attempt(tok, label) {
     ws.onmessage = e => {
       if (typeof e.data === 'string') {
         const m = JSON.parse(e.data)
-        seen.texts.push(m.type)
+        seen.texts.push(m.type || m.t)
         if (m.type === 'video') seen.config = `${m.codec} ${m.width}x${m.height}`
+        // The ICE servers the guest is told to use: the host's (TURN key or STUN), or a portal's from pp.ready.
+        if (m.type === 'hello') seen.ice = m.rtc ? JSON.stringify(m.rtc.iceServers) : 'no direct connection offered'
       } else {
         seen.binary++
         const v = new DataView(e.data)
@@ -39,7 +42,9 @@ const none = await new Promise(resolve => {
 })
 const good = token ? await attempt(token, 'right token') : null
 
-let ok = bad.binary === 0 && bad.closed === 4003 && none.binary === 0
+// Refused by the host (4003), by a portal (4401), or — through a portal that let the frame by — told "bye".
+const refused = s => s.closed === 4003 || s.closed === 4401 || s.texts.includes('bye')
+let ok = bad.binary === 0 && refused(bad) && none.binary === 0
 console.log(bad, none)
 if (good) {
   console.log(good)

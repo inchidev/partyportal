@@ -122,6 +122,8 @@
     noaccess: ['Control is off for now', 'The host has not yet allowed PartyPortal to control the mouse and keyboard.'],
   }
 
+  // hostAway: the page is served by a portal (an L4 Server) and the host's Mac is not connected to it right now.
+  let hostAway = false
   let ws, decoder, waitKey = true, gotFrame = false, final = false, retry = 0, bestGap = Infinity, late = 0, skipped = 0, badLog = [], udpGaveUp = false
   let state = { sharing: false, control: false, viewOnly: false, paused: null, title: '' }
   let frames = 0, bytes = 0, rtt = null, pingN = 0, pingAt = 0, toastTimer
@@ -170,6 +172,7 @@
     $('lockMouse').hidden = !state.control
     canvas.classList.toggle('live', state.control)
     if (!ws || ws.readyState !== 1) { dot.className = 'bad'; st.textContent = final ? 'disconnected' : 'no connection, reconnecting…'; return }
+    if (hostAway) { dot.className = 'warn'; st.textContent = 'waiting for the host'; veil('Waiting for the host', 'The host’s PartyPortal is not connected yet.'); return }
     if (!state.sharing) { dot.className = 'warn'; st.textContent = 'the host is not sharing anything yet'; veil('The host is not sharing anything yet', 'The window will appear here as soon as they pick one.'); return }
     if (!gotFrame) { dot.className = 'warn'; st.textContent = 'waiting for the picture…'; veil('Waiting for the picture…'); return }
     if (state.control && state.paused) {
@@ -390,12 +393,16 @@
   function connect() {
     if (!token) { final = true; veil('The link has no key', 'Ask the host for the complete link.'); render(); return }
     if (!('VideoDecoder' in window)) { final = true; veil('This browser will not work', 'You need a recent Chrome, Edge or Safari and a link that starts with https.'); render(); return }
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws')
+    // Next to the page: "/" → "/ws" on the host's own server, "/portal/abc" → "/portal/abc/ws" on a portal.
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/\/$/, '') + '/ws')
     ws.binaryType = 'arraybuffer'
     ws.onopen = () => { retry = 0; send({ t: 'auth', token }) }
     ws.onmessage = e => {
       if (typeof e.data !== 'string') { if (!direct) new Uint8Array(e.data, 0, 1)[0] === 2 ? onAudioPacket(e.data) : onVideo(e.data); return }
       const m = JSON.parse(e.data)
+      // The portal itself: the host's Mac is not there (yet, or any more). Not final: hello follows when it comes.
+      if (m.t === 'pp.wait') { hostAway = true; stopRtc(false); state = { sharing: false, control: false, viewOnly: false, paused: null, title: '' }; gotFrame = false; audioConfig(null); render(); return }
+      if (m.type) hostAway = false
       if (m.type === 'video') configure(m)
       else if (m.type === 'state') { const was = state.sharing; state = m; if (!m.sharing) gotFrame = false; if (!was && m.sharing) gotFrame = false; audioConfig(m.audio); render() }
       else if (m.type === 'blocked') toast('🚫 ' + m.what + ' — ' + m.why)
@@ -407,6 +414,7 @@
       else if (m.type === 'rtc-down') { stopRtc(false); waitKey = true }
     }
     ws.onclose = () => {
+      hostAway = false
       stopRtc(false)
       state.control = false
       gotFrame = false

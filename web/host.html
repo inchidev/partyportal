@@ -154,6 +154,10 @@
 
     <section>
       <h2>Link for your guest</h2>
+      <div id="viaBox" hidden>
+        <label class="check"><input type="radio" name="via" value="rendezvous"><span><b>Link through <span id="viaHost">llll.gg</span></b> <span class="dim">— no account and nothing to install; the link lasts 12 hours</span></span></label>
+        <label class="check"><input type="radio" name="via" value="tunnel"><span><b>Through a tunnel</b> <span class="dim">— cloudflared on this Mac; the link lives while PartyPortal runs</span></span></label>
+      </div>
       <div id="publicBox"></div>
       <p id="guestLine" class="dim" style="margin-top:12px">Nobody is connected.</p>
       <div class="row"><button id="kick" class="danger" hidden>Kick and replace link</button></div>
@@ -257,7 +261,9 @@
 
   let state = null, masks = [], masksSaved = '[]', selected = null, drag = null, choosing = false, capturing = false, lastWindows = ''
   const cache = {}
-  const once = (key, value, fn) => { const s = JSON.stringify(value); if (cache[key] !== s) { cache[key] = s; fn() } }
+  // Keys sorted: the host's JSON comes from Swift dictionaries, whose order changes from one answer to the next.
+  const stable = v => Array.isArray(v) ? v.map(stable) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v
+  const once = (key, value, fn) => { const s = JSON.stringify(stable(value)); if (cache[key] !== s) { cache[key] = s; fn() } }
 
   // ---- state ----
   async function poll() {
@@ -298,10 +304,24 @@
       head.className = 'pill ' + (g.control && !paused ? 'ok' : 'warn')
       $('guestLine').textContent = `Connected since ${new Date(g.since * 1000).toLocaleTimeString(undefined)} (${g.addr}), now ${what}. ` + (g.direct ? `Video goes direct${g.path ? ' (' + g.path + ')' : ''}.` : 'Video goes via relay.') + (g.fps >= 0 ? ` Their screen shows ${g.fps} fps${g.late > 250 ? ', frames arrive ' + g.late + ' ms late' : ''}.` : '')
     })
-    once('link', [s.link, s.tunnel], () => {
+    once('link', [s.link, s.tunnel, s.portal, s.share], () => {
       $('localLink').value = s.link.local
-      const box = $('publicBox'), t = s.tunnel
-      if (s.link.public) box.innerHTML = `<div class="link"><input id="publicLink" type="text" readonly value="${esc(s.link.public)}"><button data-copy="publicLink" class="primary">Copy</button></div><div class="row"><button id="tunnelOff">Close public access</button></div><p class="dim">The link goes through Cloudflare and lives while PartyPortal is running. Whoever has the link is the guest.</p>`
+      const box = $('publicBox'), t = s.tunnel, p = s.portal, sh = s.share, rv = sh.via === 'rendezvous'
+      $('newToken').hidden = !!p
+      $('kick').textContent = p ? 'Kick' : 'Kick and replace link'
+      // The choice of how to make a link, while there is none (a stopped portal from the rendezvous counts as none).
+      $('viaBox').hidden = !!(p && !(p.rendezvous && p.status === 'stopped')) || !!s.link.public && !p || t.running || sh.busy
+      $('viaHost').textContent = sh.rendezvous
+      document.querySelectorAll('[name=via]').forEach(el => { el.checked = el.value === sh.via })
+      if (sh.busy) box.innerHTML = `<p class="dim">Opening a portal on ${esc(sh.rendezvous)}…</p>`
+      else if (p) {
+        const where = p.status === 'ready' ? 'PartyPortal is connected to the portal.' : p.status === 'connecting' ? 'Connecting to the portal…' : 'Not connected to the portal.'
+        const until = p.expiresAt ? ` The link works until ${new Date(p.expiresAt * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}.` : ''
+        const again = p.rendezvous && p.status === 'stopped' ? '<button id="tunnelOn" class="primary">Open a new link</button>' : ''
+        const about = p.rendezvous ? `${esc(sh.rendezvous)} serves the page and passes the connection on; the picture goes straight to the guest when their network allows.${until}` : 'The page and the connection go through your portal; this Mac dials out to it.'
+        box.innerHTML = `<div class="link"><input id="publicLink" type="text" readonly value="${esc(s.link.public)}"><button data-copy="publicLink" class="primary">Copy</button></div><div class="row"><span class="pill ${p.status === 'ready' ? 'ok' : p.status === 'connecting' ? 'warn' : 'bad'}">${esc(p.status)}</span><span class="dim">${esc(where)}${p.error ? ' ' + esc(p.error) : ''}</span><span class="grow"></span>${again}<button id="portalOff">${p.rendezvous ? 'Close public access' : 'Leave the portal'}</button></div><p class="dim">${about} Whoever has the link is the guest.</p>`
+      } else if (rv) box.innerHTML = `<div class="row"><button id="tunnelOn" class="primary">Open public access</button></div>${sh.error ? `<p class="dim">That did not work: ${esc(sh.error)}</p>` : '<p class="dim">No public link yet: the window is only reachable from this Mac.</p>'}`
+      else if (s.link.public) box.innerHTML = `<div class="link"><input id="publicLink" type="text" readonly value="${esc(s.link.public)}"><button data-copy="publicLink" class="primary">Copy</button></div><div class="row"><button id="tunnelOff">Close public access</button></div><p class="dim">The link goes through Cloudflare and lives while PartyPortal is running. Whoever has the link is the guest.</p>`
       else if (t.running) box.innerHTML = '<p class="dim">Opening public access, this takes a few seconds…</p>'
       else if (!t.available) box.innerHTML = '<p class="dim">A public link needs cloudflared, and it is not on this Mac. Install PartyPortal again with the command from partyportal.inchi.dev, or run <code>brew install cloudflared</code> in Terminal, then restart PartyPortal.</p>'
       else box.innerHTML = `<div class="row"><button id="tunnelOn" class="primary">Open public access</button></div>${t.error ? `<p class="dim">That did not work: ${esc(t.error)}</p>` : '<p class="dim">No public link yet: the window is only reachable from this Mac.</p>'}`
@@ -461,6 +481,7 @@
     else if (t.dataset.unblock) saveLocks({ blockedShortcuts: state.settings.locks.blockedShortcuts.filter(x => x !== t.dataset.unblock) })
     else if (t.id === 'tunnelOn') act('/api/tunnel', { on: true })
     else if (t.id === 'tunnelOff') act('/api/tunnel', { on: false })
+    else if (t.id === 'portalOff') { if (confirm('The guest’s link will stop reaching this Mac. Close it?')) act('/api/portal', { off: true }) }
   })
   document.querySelectorAll('[data-lock]').forEach(el => el.addEventListener('change', () => saveLocks({ [el.dataset.lock]: el.checked })))
   $('cmdMode').onchange = e => saveLocks({ cmdMode: e.target.value })
@@ -479,6 +500,7 @@
   }, true)
   const saveBackground = mode => act('/api/settings', { background: { mode: mode || document.querySelector('[name=bgMode]:checked').value, park: $('bgPark').checked } })
   document.querySelectorAll('[name=bgMode]').forEach(el => { el.onchange = () => saveBackground() })
+  document.querySelectorAll('[name=via]').forEach(el => { el.onchange = () => act('/api/settings', { share: { via: el.value } }) })
   $('bgPark').onchange = () => saveBackground()
   $('bgGive').onclick = () => saveBackground('takeover')
   const saveVideo = () => act('/api/settings', { video: { maxDim: +$('vDim').value, fps: +$('vFps').value, kbps: +$('vKbps').value, audio: $('vAudio').checked, direct: $('vDirect').checked } })

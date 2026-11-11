@@ -38,7 +38,29 @@ struct HTTPResponse {
     static let ok = json(["ok": true])
 }
 
-final class WebSocket {
+/// What Core needs of a guest's WebSocket. Two kinds satisfy it: a socket this Mac accepted itself
+/// (`WebSocket`, below) and a guest relayed through a portal on an L4 Server (`RelayedGuest`, PortalLink.swift).
+/// Sends may come from any thread (video and audio arrive on encoder threads); callbacks fire on the main queue.
+protocol GuestSocket: AnyObject {
+    /// Who is on the other end, for the journal and the panel.
+    var remote: String { get }
+    /// Bytes handed over but not yet written out: the backpressure signal the video and audio sinks read.
+    var pendingBytes: Int { get }
+    var onText: ((String) -> Void)? { get set }
+    var onClose: (() -> Void)? { get set }
+    func send(text: String)
+    func send(binary: Data)
+    func close(code: UInt16)
+}
+
+extension GuestSocket {
+    func send(json: [String: Any]) {
+        guard let d = try? JSONSerialization.data(withJSONObject: json) else { return }
+        send(text: String(decoding: d, as: UTF8.self))
+    }
+}
+
+final class WebSocket: GuestSocket {
     fileprivate let conn: NWConnection
     private let lock = NSLock()
     private var pending = 0
@@ -59,11 +81,6 @@ final class WebSocket {
 
     func send(text: String) { sendFrame(opcode: 0x1, payload: Data(text.utf8)) }
     func send(binary: Data) { sendFrame(opcode: 0x2, payload: binary) }
-
-    func send(json: [String: Any]) {
-        guard let d = try? JSONSerialization.data(withJSONObject: json) else { return }
-        sendFrame(opcode: 0x1, payload: d)
-    }
 
     func close(code: UInt16 = 1000) {
         sendFrame(opcode: 0x8, payload: Data([UInt8(code >> 8), UInt8(code & 0xff)]))
