@@ -185,7 +185,18 @@
 <header>
   <div class="wrap">
     <a class="brand" href="/" aria-label="PartyPortal home">
-      <svg viewBox="0 0 64 64" aria-hidden="true"><path class="f-portal" fill-rule="evenodd" d="M12 4h40a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8V12a8 8 0 0 1 8-8zM23 60V37a9 9 0 0 1 18 0v23z"/><circle cx="16.5" cy="16.5" r="4" class="f-tape"/></svg>
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <clipPath id="brand-clip"><path d="M0 0H64V47H57A25 9.5 0 0 1 7 47H0Z"/></clipPath>
+        <ellipse cx="32" cy="47" rx="25" ry="9.5" fill="#121417"/>
+        <path d="M7 47a25 9.5 0 0 1 50 0" fill="none" class="s-portal" stroke-width="6" stroke-linecap="round"/>
+        <g clip-path="url(#brand-clip)"><g transform="rotate(-11 32 47)">
+          <path d="M32 9 52.9 60H11.1Z" class="f-tape"/>
+          <path d="M26.7 22h10.6l2.1 5H24.6Z" class="f-ink"/>
+          <path d="M21.7 34h20.6l2 5H19.7Z" class="f-ink"/>
+        </g></g>
+        <circle cx="27.3" cy="9.7" r="5.5" class="f-portal"/>
+        <path d="M7 47a25 9.5 0 0 0 50 0" fill="none" class="s-portal" stroke-width="6" stroke-linecap="round"/>
+      </svg>
       PartyPortal
     </a>
     <nav>

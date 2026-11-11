@@ -1,5 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PartyPortal">
-  <!-- A window with a doorway cut into it. The doorway is a real hole: whatever is behind shows through. -->
-  <path fill="#4a35ff" fill-rule="evenodd" d="M12 4h40a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8V12a8 8 0 0 1 8-8zM23 60V37a9 9 0 0 1 18 0v23z"/>
-  <circle cx="16.5" cy="16.5" r="4" fill="#ffcf24"/>
+  <!-- A party hat coming up through a portal: the party arrives through the window you opened. -->
+  <clipPath id="pp-clip"><path d="M0 0H64V47H57A25 9.5 0 0 1 7 47H0Z"/></clipPath>
+  <ellipse cx="32" cy="47" rx="25" ry="9.5" fill="#121417"/>
+  <path d="M7 47a25 9.5 0 0 1 50 0" fill="none" stroke="#4a35ff" stroke-width="6" stroke-linecap="round"/>
+  <g clip-path="url(#pp-clip)"><g transform="rotate(-11 32 47)">
+    <path d="M32 9 52.9 60H11.1Z" fill="#ffcf24"/>
+    <path d="M26.7 22h10.6l2.1 5H24.6Z" fill="#121417"/>
+    <path d="M21.7 34h20.6l2 5H19.7Z" fill="#121417"/>
+  </g></g>
+  <circle cx="27.3" cy="9.7" r="5.5" fill="#4a35ff"/>
+  <path d="M7 47a25 9.5 0 0 0 50 0" fill="none" stroke="#4a35ff" stroke-width="6" stroke-linecap="round"/>
 </svg>

@@ -4,9 +4,18 @@
 <meta charset="utf-8">
 <style>html, body { margin: 0; background: transparent; } svg { display: block; }</style>
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- macOS proportions: an 824 px rounded square inside a 1024 px canvas. The icon is the mark itself:
-       the window is the violet square, the doorway is cut at the bottom, the dot is its one control. -->
+  <!-- macOS proportions: an 824 px rounded square inside a 1024 px canvas, the mark on portal violet. -->
   <rect x="100" y="100" width="824" height="824" rx="186" fill="#4a35ff"/>
-  <path d="M380 924V587a132 132 0 0 1 264 0v337z" fill="#f5f2ea"/>
-  <circle cx="284" cy="284" r="58" fill="#ffcf24"/>
+  <g transform="translate(192 172) scale(10)">
+    <clipPath id="pp-clip"><path d="M0 0H64V47H57A25 9.5 0 0 1 7 47H0Z"/></clipPath>
+    <ellipse cx="32" cy="47" rx="25" ry="9.5" fill="#121417"/>
+    <path d="M7 47a25 9.5 0 0 1 50 0" fill="none" stroke="#f5f2ea" stroke-width="6" stroke-linecap="round"/>
+    <g clip-path="url(#pp-clip)"><g transform="rotate(-11 32 47)">
+      <path d="M32 9 52.9 60H11.1Z" fill="#ffcf24"/>
+      <path d="M26.7 22h10.6l2.1 5H24.6Z" fill="#121417"/>
+      <path d="M21.7 34h20.6l2 5H19.7Z" fill="#121417"/>
+    </g></g>
+    <circle cx="27.3" cy="9.7" r="5.5" fill="#f5f2ea"/>
+    <path d="M7 47a25 9.5 0 0 0 50 0" fill="none" stroke="#f5f2ea" stroke-width="6" stroke-linecap="round"/>
+  </g>
 </svg>
